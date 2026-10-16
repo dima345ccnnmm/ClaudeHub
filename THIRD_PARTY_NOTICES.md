@@ -1,4 +1,4 @@
-# Third-party notices — ClaudeHub DOORS v0.4.1
+# Third-party notices — ClaudeHub DOORS v0.4.2
 
 ## Abysall
 
@@ -60,3 +60,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## v0.4.2 local changes
+
+Whole-rig Seek/Screech/Eyes identity, current-room ESP lifecycle, separate Auto Interact filters, model-pivot/furniture LOS handling and notification card layouts are ClaudeHub adaptations of the supplied reference patterns. Global unowned threats remain visible across room changes. Native DOORS achievement UI is not cloned.
