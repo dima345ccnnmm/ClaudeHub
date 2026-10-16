@@ -1,35 +1,20 @@
-# DOORS v0.3.0
+# ClaudeHub DOORS v0.4.1 / Loader v1.1.0
 
-## Requested fixes
+- Run callbacks wait for finished UI initialization. Catch-up scans cover objects streamed during UI creation.
+- Third Person: normal DOORS Scriptable camera allowed; old CameraSubject gate removed; offset applied at Last+1,
+  never accumulated; suspension for known hiding/animation states; camera and head/accessory transparency restored.
+- Dupe: strict positive trigger detection (CurrentRooms / FakeDoor or DoorFake / Hidden BasePart / TouchTransmitter).
+  Decorative names and Hidden-only models are not enough. Reclassification handles late triggers and filter changes.
+  Optional less-precise compatibility mode is available under Visuals > ESP > Dupe detection.
+- Independent DoorsLobby.luau: Home/profile/info, selected-player elevator join, Quick Play, configurable elevator
+  creation, unlocked badge equip/cycling, manual code entry and cancellable sample-code batch requests.
+- Loader v1.1 routes lobby Place ID 6516141723 to DoorsLobby.luau, DOORS runs to Doors.luau,
+  other games to unchanged ClaudeHub.luau. Direct Doors.luau launch also delegates to lobby.
+- No direct Main_Game.PromptService indexing; optional sounds are discovered and changed only when present.
+  Anti-idle checks missing toggle/state safely. No persistent legacy getconnections hooks are installed.
+- Old Main.luau is not executed by these modules. Rejoin before testing to stop any legacy callbacks still running.
 
-- Exit ESP targets only named Door leaf parts, with separate outlines for double doors. Wall-containing outer models are never highlighted as a fallback.
-- Visuals > Entity ESP now groups the toggle, multi-type filter, quick single-type selector and Select all / Clear actions together.
-- Main > Fast Interact: enable the checkbox, close the menu and hold F. Rebind via the inline badge; Hold/Toggle modes are available. Uses normal prompt range and line-of-sight. Locks/purchases, hiding/exit, dropped items and fake-door/hazard prompts are ignored by default.
-
-## Fifteen additional functions adapted from Abysall
-
-1. Loot / consumables ESP.
-2. Chest ESP.
-3. Gold / stardust ESP.
-4. Ladder ESP.
-5. Player ESP.
-6. Speed boost.
-7. Enable jumping.
-8. Enable sliding.
-9. Infinite jumps.
-10. No acceleration (physical-properties adaptation).
-11. Remove fog.
-12. Transparent occupied hiding spot.
-13. Item spawn notifications.
-14. Low oxygen warning.
-15. Haste timer display / warning.
-
-Objective labels and hiding-spot names are also expanded. All gameplay toggles start OFF. Existing inline keybinds, HUD dragging and cleanup are retained.
-
-## Updating
-
-Replace Doors.luau in the repository, add/update THIRD_PARTY_NOTICES.md, unload the old DOORS window and run the existing Loader.luau again. Loader.luau and the universal ClaudeHub.luau do not need changing.
-
-Credit: FireBacon (bocaj111004), Abysall, MIT. The full license is embedded in Doors.luau and included in THIRD_PARTY_NOTICES.md. No upstream analytics is included.
-
-Syntax and deterministic client/UI mock tests passed. Real Roblox behavior, server validation and executor compatibility still require live testing. No blanket Archives/Stairwell support is claimed.
+Checks: compile all three scripts; deterministic yielded-startup, missing-toggle/member, Scriptable camera,
+head/camera restoration, strict/late-trigger Dupe, run regression, standalone lobby and loader routing/failure tests.
+These are local mocks, not live Roblox/executor/gameplay tests. Strict Dupe can omit unrecognized/unstreamed triggers;
+new floor-specific support is not claimed.

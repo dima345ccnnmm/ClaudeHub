@@ -1,4 +1,4 @@
--- ClaudeHub loader v1.0.0 | DOORS universe + universal fallback.
+-- ClaudeHub loader v1.1.0 | DOORS universe + universal fallback.
 -- Run again after teleporting. This loader never queues itself automatically.
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubLoader_v1"
@@ -19,7 +19,9 @@ local module = "unknown"
 local ok, result = xpcall(function()
     assert(type(loadstring) == "function", "This environment does not support loadstring")
     if not game:IsLoaded() then game.Loaded:Wait() end
-    module = game.GameId == 2440500124 and "Doors.luau" or "ClaudeHub.luau"
+    if game.GameId == 2440500124 then
+        module = game.PlaceId == 6516141723 and "DoorsLobby.luau" or "Doors.luau"
+    else module = "ClaudeHub.luau" end
     local source = game:HttpGet(BASE .. module)
     assert(type(source) == "string" and #source > 0, "Empty download: " .. module)
     local chunk, compileError = loadstring(source, "@ClaudeHub/" .. module)

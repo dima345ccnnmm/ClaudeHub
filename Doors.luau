@@ -3,8 +3,10 @@ DOORS feature portions adapted from Abysall by FireBacon (bocaj111004).
 Source: https://github.com/bocaj111004/Abysall
 Revision: 66d4192d00d9b824a304b654bc2d2eb89c3b372b
 Port: entity/object aliases, ESP and selected interaction, character,
-lighting and notification patterns, adapted to ClaudeHub's renderer/lifecycle. Original analytics, remote actions,
+lighting and notification patterns, adapted to ClaudeHub's renderer/lifecycle. Original analytics,
 anti-cheat hooks and destructive entity handlers are NOT included.
+Additional UI/control patterns adapted from the user-supplied Main.luau.
+Local hazard switches do not imply server-side invulnerability.
 
 MIT License
 
@@ -28,10 +30,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ]]
--- ClaudeHub / DOORS v0.3.0 -- initial client-assist module, not an anti-cheat bypass.
+-- ClaudeHub / DOORS v0.4.1 -- initial client-assist module, not an anti-cheat bypass.
 -- Lobby and all places in the DOORS universe are routed here by Loader.luau.
-local VERSION, STARTED = "v0.3.0", os.clock()
+local VERSION, STARTED = "v0.4.1", os.clock()
 assert(game.GameId == 2440500124, "Use Loader.luau: this module is only for DOORS")
+-- Direct execution has the same lobby routing as the universal loader.
+if game.PlaceId == 6516141723 then
+    local source = game:HttpGet("https://raw.githubusercontent.com/dima345ccnnmm/ClaudeHub/main/DoorsLobby.luau")
+    local chunk, err = loadstring(source, "@ClaudeHub/DoorsLobby.luau")
+    assert(chunk, "Lobby compilation failed: " .. tostring(err))
+    return chunk()
+end
 local env = getgenv and getgenv() or _G
 if env.__ClaudeHubDoors and not env.__ClaudeHubDoors.Unloaded then
     env.__ClaudeHubDoors:Notify("DOORS module is already open.", 3)
@@ -53,9 +62,11 @@ end
 local Library = fetch("Library.lua")
 env.__ClaudeHubDoors = Library
 local Options, Toggles = Library.Options, Library.Toggles
-local alive, connections, cleanup = true, {}, {}
+local alive, ready, connections, cleanup = true, false, {}, {}
 local function connect(event, fn)
-    local c = event:Connect(fn)
+    local c = event:Connect(function(...)
+        if alive and ready then return fn(...) end
+    end)
     table.insert(connections, c)
     return c
 end
@@ -71,9 +82,10 @@ local Window = Library:CreateWindow({Title = "ClaudeHub | DOORS", Footer = VERSI
     Center = true, Resizable = true, NotifyOnError = true, Size = UDim2.fromOffset(1040, 720)})
 local Tabs = {
     Home = Window:AddTab("Home", "house"),
-    Main = Window:AddTab("Main", "gamepad-2"),
+    Main = Window:AddTab("General", "gamepad-2"),
+    Exploits = Window:AddTab("Exploits", "shield"),
     Visuals = Window:AddTab("Visuals", "eye"),
-    Assist = Window:AddTab("Assist", "bell"),
+    Assist = Window:AddTab("Session", "layout-dashboard"),
     Settings = Window:AddTab("UI Settings", "settings"),
 }
 local function copy(text)
@@ -118,7 +130,12 @@ Tabs.Home:UpdateWarningBox({Visible = true, IsNormal = true, LockSize = true,
         "= Door ESP targets only leaf parts, including double doors",
         "+ Entity selector: multi-list, show only one, select all/clear",
         "+ Fast Interact: inline rebindable Hold key (F by default)",
-        "+ 15 more Abysall-inspired functions; all default OFF",
+        "= v0.4.1: lobby module routing + late Scriptable third-person camera",
+        "= Strict Dupe trigger filter; startup callbacks gated until UI is ready",
+        "+ v0.4: Abysall-style Camera/Effects, Entities/Settings, ESP/Settings",
+        "+ Configurable ESP colors, tracers, arrows and notification filters",
+        "+ Third person, flight, noclip, prompt controls and local hazards",
+        "! Compatibility-dependent features report missing adapters; no universal bypass",
         "+ ESP credit: FireBacon (bocaj111004) | MIT",
         "+ Fullbright, local flashlight, FOV and draggable HUD",
         "! First release: test in-game; no bypass or invulnerability claims"}, "\n")})
@@ -166,6 +183,15 @@ notes:AddLabel("Markers depend on replicated objects and streaming. They cannot 
 notes:AddLabel("Latest room is the server's progress value, not necessarily your current room.", true)
 notes:AddLabel("RightControl opens the menu. Click the badge beside a toggle to rebind it.", true)
 
+-- Tabboxes follow the supplied Abysall screenshots, while Home/Session stay ClaudeHub-owned.
+local panels, extension = {}, {}
+local cameraTabs = Tabs.Visuals:AddLeftTabbox("Camera / Effects")
+panels.Camera, panels.Effects = cameraTabs:AddTab("Camera"), cameraTabs:AddTab("Effects")
+local notifyTabs = Tabs.Visuals:AddRightTabbox("Entities / Settings")
+panels.Entities, panels.Notify = notifyTabs:AddTab("Entities"), notifyTabs:AddTab("Settings")
+local espTabs = Tabs.Visuals:AddRightTabbox("ESP / Settings")
+panels.ESP, panels.ESPSettings = espTabs:AddTab("ESP"), espTabs:AddTab("Settings")
+
 -- Reversible Lighting changes. Track the game's most recent attempted values.
 local brightOriginal, writingLight = {}, false
 local brightValues = {Brightness = 2, Ambient = Color3.fromRGB(200, 200, 200),
@@ -176,6 +202,7 @@ local function writeLight(property, value)
     writingLight = false
 end
 local function setBright(value)
+    if value and extension.BeforeBright then extension.BeforeBright() end
     if value then
         for k, v in pairs(brightValues) do
             if brightOriginal[k] == nil then brightOriginal[k] = Lighting[k] end
@@ -197,7 +224,7 @@ for k in pairs(brightValues) do
     end)
 end
 onCleanup(function() setBright(false) end)
-local visuals = Tabs.Visuals:AddLeftGroupbox("Lighting", "sun")
+local visuals = panels.Camera
 toggle(visuals, "DoorsBright", "Fullbright", setBright)
 visuals:AddLabel("Local lighting only; effects and scripted darkness can still affect the view.", true)
 
@@ -219,7 +246,7 @@ visuals:AddSlider("DoorsLightRange", {Text = "Light range", Default = 25, Min = 
     Callback = updateLight})
 onCleanup(removeLight)
 
-local cameraBox = Tabs.Visuals:AddRightGroupbox("Camera", "camera")
+local cameraBox = panels.Camera
 local trackedCamera, originalFov, writingFov
 local cameraConnection
 local function restoreFov()
@@ -250,7 +277,7 @@ local function applyFov()
     end
 end
 toggle(cameraBox, "DoorsFov", "Custom FOV", applyFov)
-cameraBox:AddSlider("DoorsFovValue", {Text = "Field of view", Default = 80, Min = 50, Max = 110,
+cameraBox:AddSlider("DoorsFovValue", {Text = "Field of view", Default = 70, Min = 1, Max = 120,
     Rounding = 0, Callback = applyFov})
 cameraBox:AddLabel("Off by default. May conflict with scripted cutscene cameras.", true)
 connect(workspace:GetPropertyChangedSignal("CurrentCamera"), applyFov)
@@ -304,17 +331,32 @@ for _, map in ipairs({entityNames, entityESPLabels}) do
     end
 end
 table.sort(entityChoices)
+-- Conservative Dupe detection. Hidden alone exists on decorative models too.
+-- TouchTransmitter is engine evidence of a touch trigger; do not require CanTouch
+-- to remain true, because our own local bypass may temporarily set it false.
+local function isDupeDoor(obj)
+    if not obj:IsA("Model") or (obj.Name ~= "FakeDoor" and obj.Name ~= "DoorFake") then return false end
+    local rooms = roomFolder()
+    if not rooms or not obj:IsDescendantOf(rooms) then return false end
+    local hidden = obj:FindFirstChild("Hidden")
+    if not hidden or not hidden:IsA("BasePart") then return false end
+    local mode = Options.DoorsDupeDetection and Options.DoorsDupeDetection.Value or "Strict: touch trigger"
+    if mode == "Compatible: Hidden hitbox" then return true end
+    return hidden:FindFirstChildOfClass("TouchTransmitter") ~= nil
+end
 local function entityLabel(obj)
     if not obj:IsA("Model") and not obj:IsA("BasePart") then return end
     if player.Character and obj:IsDescendantOf(player.Character) then return end
     -- Abysall targets MandrakeLive.Hole, not every unrelated part named Hole.
     if obj.Name == "Hole" and (not obj.Parent or obj.Parent.Name ~= "MandrakeLive") then return end
+    if (obj.Name == "FakeDoor" or obj.Name == "DoorFake") and not isDupeDoor(obj) then return end
     local label = entityESPLabels[obj.Name] or entityNames[obj.Name]
     if not label then return end
     -- Avoid duplicate labels for the same rig (e.g. Figure > FigureRig).
     local ancestor = obj.Parent
     while ancestor and ancestor ~= workspace do
-        if (entityESPLabels[ancestor.Name] or entityNames[ancestor.Name]) == label then return end
+        if (entityESPLabels[ancestor.Name] or entityNames[ancestor.Name]) == label
+            and (label ~= "Dupe" or isDupeDoor(ancestor)) then return end
         ancestor = ancestor.Parent
     end
     return label
@@ -449,6 +491,10 @@ local extraRegister = function() end
 local alerted = setmetatable({}, {__mode = "k"})
 local function alertEntity(obj, label)
     if alerted[obj] or not enabled("DoorsAlerts") then return end
+    if extension.EntityAlert then
+        if extension.EntityAlert(obj, label) then alerted[obj] = true end
+        return
+    end
     alerted[obj] = true
     Library:Notify(label .. " detected (replicated object). Check your surroundings; detection is not a safety guarantee.", 6)
 end
@@ -486,7 +532,10 @@ local function prepareHighlight(marker, obj, part, label, active)
 end
 local function drop(obj)
     local marker = markers[obj]
-    if marker then releasePatch(marker) marker.Billboard:Destroy()
+    if marker then
+        if marker.Tracer then marker.Tracer:Destroy() end
+        if marker.Arrow then marker.Arrow:Destroy() end
+        releasePatch(marker) marker.Billboard:Destroy()
         for _, h in ipairs(marker.Highlights) do h:Destroy() end
         markers[obj] = nil end
 end
@@ -494,7 +543,7 @@ local function clearMarkers()
     for obj in pairs(markers) do drop(obj) end
 end
 onCleanup(function() clearMarkers() table.clear(candidates) end)
-local markersBox = Tabs.Visuals:AddLeftGroupbox("Room markers", "scan-eye")
+local markersBox = panels.ESP
 for _, entry in ipairs({{"Exit", "Exit doors"}, {"Item", "Objectives / keys / books"},
     {"Hide", "Hiding spots"}, {"Loot", "Loot / consumables"}, {"Chest", "Chests"},
     {"Currency", "Gold / stardust"}, {"Ladder", "Ladders"}, {"Player", "Players"}}) do
@@ -509,13 +558,17 @@ end
 markersBox:AddSlider("DoorsMarkerDistance", {Text = "Marker range (studs)", Default = 250, Min = 30,
     Max = 750, Rounding = 0})
 markersBox:AddLabel("Loaded objects only. Item/hiding names are an initial allowlist; some floors need additional adapters. Hiding spots may be occupied or unsafe.", true)
-local entityBox = Tabs.Visuals:AddRightGroupbox("Entity ESP | Abysall port", "ghost")
+local entityBox = panels.ESP
 entityBox:AddLabel("By FireBacon (bocaj111004) | adapted for ClaudeHub", true)
 toggle(entityBox, "DoorsMarkEntity", "Entity ESP", function(value)
     if not value then
         for obj, marker in pairs(markers) do if marker.Category == "Entity" then drop(obj) end end
     end
 end)
+entityBox:AddDropdown("DoorsDupeDetection", {Text = "Dupe detection", Values = {"Strict: touch trigger", "Compatible: Hidden hitbox"}, Default = 1, Callback = function()
+    for _, candidate in ipairs(workspace:GetDescendants()) do register(candidate, false) end
+end})
+entityBox:AddLabel("Strict mode ignores name-only / decorative fake doors. Requires Hidden + a replicated touch trigger. If an older floor streams no trigger, Compatible mode uses Hidden only (less precise).", true)
 entityBox:AddDropdown("DoorsEntityList", {Text = "Entities to show (multiple)", Values = entityChoices,
     Default = entityChoices, Multi = true, AllowNull = true, Callback = function()
         -- Rebuild at the next refresh; release transparent-rusher patches now.
@@ -537,7 +590,7 @@ entityBox:AddButton({Text = "Rescan loaded entities", Func = function()
     Library:Notify("Rescanned loaded objects. Enable Entity markers and check the entity filter/range.", 5)
 end})
 entityBox:AddLabel("All known types are selected initially, but Entity markers is OFF. Names come from Abysall; Archives/Stairwell-specific entities are not yet verified.", true)
-local alertsBox = Tabs.Assist:AddLeftGroupbox("Entity alerts", "bell")
+local alertsBox = panels.Entities
 toggle(alertsBox, "DoorsAlerts", "Entity spawn notifications", function(value)
     if value then
         for obj, entry in pairs(candidates) do
@@ -627,7 +680,7 @@ local function renderMarkers()
         return a.Distance < b.Distance
     end)
     local visible, highlightCount = {}, 0
-    for i = 1, math.min(#nearest, 64) do
+    for i = 1, math.min(#nearest, Options.DoorsESPLimit and Options.DoorsESPLimit.Value or 64) do
         local row = nearest[i]
         local obj, entry = row.Object, row.Entry
         visible[obj] = true
@@ -660,7 +713,8 @@ local function renderMarkers()
             end
             h.Adornee = target
             h.FillColor, h.OutlineColor = colors[entry.Category], colors[entry.Category]
-            h.FillTransparency, h.OutlineTransparency = 0.85, 0.2
+            h.FillTransparency = Options.DoorsESPFill and Options.DoorsESPFill.Value or 0.85
+            h.OutlineTransparency = Options.DoorsESPOutline and Options.DoorsESPOutline.Value or 0.2
             h.Enabled = highlightCount < 24
             if h.Enabled then highlightCount += 1 end
         end
@@ -670,6 +724,7 @@ local function renderMarkers()
         end
         marker.Billboard.Adornee = row.Part
         marker.Text.Text = ("%s | %d studs"):format(entry.Label, math.floor(row.Distance))
+        if extension.StyleMarker then extension.StyleMarker(marker, row) end
     end
     for obj in pairs(markers) do if not visible[obj] then drop(obj) end end
 end
@@ -727,7 +782,7 @@ local function refresh()
 end
 connect(RunService.Heartbeat, function(dt)
     accumulator += dt
-    if accumulator < 0.5 then return end
+    if accumulator < 0.2 then return end
     accumulator = 0
     refresh()
 end)
@@ -775,7 +830,7 @@ onCleanup(function()
     for _, pool in ipairs({speedOwned, jumpOwned, slideOwned, physicsOwned, fogOwned, hidingOwned}) do restore(pool) end
 end)
 
-local movement = Tabs.Main:AddLeftGroupbox("Character | Abysall adaptations", "footprints")
+local movement = Tabs.Main:AddLeftGroupbox("Character", "footprints")
 toggle(movement, "DoorsSpeed", "Speed boost", function(value) if not value then restore(speedOwned) end end)
 movement:AddSlider("DoorsSpeedAdd", {Text = "Extra speed", Default = 4, Min = 0, Max = 30, Rounding = 0})
 toggle(movement, "DoorsCanJump", "Enable jumping", function(value) if not value then restore(jumpOwned) end end)
@@ -810,7 +865,7 @@ connect(UIS.JumpRequest, function()
     end
 end)
 
-local effects = Tabs.Visuals:AddRightGroupbox("Environment | Abysall adaptations", "cloud-fog")
+local effects = panels.Effects
 toggle(effects, "DoorsNoFog", "Remove fog", function(value) if not value then restore(fogOwned) end end)
 toggle(effects, "DoorsTransparentHiding", "Transparent occupied hiding spot", function(value)
     if not value then restore(hidingOwned) end
@@ -884,9 +939,9 @@ local function applyHidingTransparency()
 end
 
 -- Fast Interact combines Abysall's InstantPrompts/AutoInteract patterns.
--- It never changes reach/line-of-sight or bypasses disabled prompts. Hold F
+-- Default settings never change reach/line-of-sight or disabled prompts. Hold F
 -- (rebind the inline badge) with the checkbox enabled and the menu closed.
-local interaction = Tabs.Main:AddRightGroupbox("Fast Interact", "hand")
+local interaction = Tabs.Main:AddLeftGroupbox("Self / Interaction", "hand")
 local prompts = setmetatable({}, {__mode = "k"})
 local promptCooldown = setmetatable({}, {__mode = "k"})
 local activePrompt
@@ -908,7 +963,7 @@ interaction:AddSlider("DoorsInteractRange", {Text = "Search range (studs)", Defa
 interaction:AddDropdown("DoorsInteractIgnore", {Text = "Ignore", Multi = true, AllowNull = true,
     Values = {"Hide / exit", "Locks / purchases", "Dropped items", "Currency", "Fake doors / hazards"},
     Default = {"Hide / exit", "Locks / purchases", "Dropped items", "Fake doors / hazards"}})
-interaction:AddLabel("Enable, close the menu, then hold F near a prompt. The badge can be rebound (including modifiers). Search range never exceeds the prompt's own activation distance. Shop/lock/hiding/hazard prompts are ignored by default. Server-required holds may still apply.", true)
+interaction:AddLabel("Enable, close the menu, then hold F near a prompt. The badge can be rebound (including modifiers). Search range uses the current prompt activation distance (including explicit Self overrides). Shop/lock/hiding/hazard prompts are ignored by default. Server-required holds may still apply.", true)
 onCleanup(finishPrompt)
 local focused = true
 connect(UIS.WindowFocusReleased, function() focused = false finishPrompt() end)
@@ -943,8 +998,9 @@ local function ignoredPrompt(prompt)
 end
 local function fastInteract()
     local key = Options.DoorsFastInteractKey
-    if not alive or not focused or not enabled("DoorsFastInteract") or Library.Toggled or Library.IsPicking
-        or UIS:GetFocusedTextBox() or not key:GetState() then finishPrompt() return end
+    if not alive or not focused or not (enabled("DoorsFastInteract") and key:GetState()
+        or enabled("DoorsAutoInteract") and Options.DoorsAutoInteractKey:GetState())
+        or Library.Toggled or Library.IsPicking or UIS:GetFocusedTextBox() then finishPrompt() return end
     if activePrompt then return end
     local part, h = root(), hum()
     if not part or not h or h.Health <= 0 then return end
@@ -985,7 +1041,7 @@ local function fastInteract()
     task.delay(0.03, function() if activePrompt == record then finishPrompt() end end)
 end
 
-local extraAlerts = Tabs.Assist:AddLeftGroupbox("Items / floor warnings", "bell-ring")
+local extraAlerts = panels.Entities
 toggle(extraAlerts, "DoorsItemAlerts", "Item spawn notifications")
 toggle(extraAlerts, "DoorsOxygenAlert", "Low oxygen warning")
 extraAlerts:AddSlider("DoorsOxygenThreshold", {Text = "Oxygen warning (%)", Default = 25, Min = 5, Max = 75, Rounding = 0})
@@ -1001,7 +1057,10 @@ extraRegister = function(obj, allowAlert)
     local category, label = classify(obj)
     if category == "Loot" and not itemSeen[obj] then
         itemSeen[obj] = true
-        if allowAlert and enabled("DoorsItemAlerts") then Library:Notify("Item spawned: " .. label, 4) end
+        if allowAlert and enabled("DoorsItemAlerts") then
+            if extension.ItemAlert then extension.ItemAlert(obj, label)
+            else Library:Notify("Item spawned: " .. label, 4) end
+        end
     end
 end
 for _, obj in ipairs(workspace:GetDescendants()) do extraRegister(obj, false) end
@@ -1017,7 +1076,9 @@ local function updateExtraAlerts()
         if type(value) == "number" then
             if value > Options.DoorsOxygenThreshold.Value + 5 then oxygenWarned = false end
             if value <= Options.DoorsOxygenThreshold.Value and not oxygenWarned then
-                oxygenWarned = true Library:Notify(("Low oxygen: %.1f%%"):format(value), 5)
+                oxygenWarned = true
+                if extension.Notify then extension.Notify("Low oxygen", ("%.1f%% remaining"):format(value))
+                else Library:Notify(("Low oxygen: %.1f%%"):format(value), 5) end
             end
         end
     else oxygenWarned = false oxygenLabel:SetText("Oxygen: disabled") end
@@ -1030,7 +1091,9 @@ local function updateExtraAlerts()
             hasteLabel:SetText(("Haste timer: %02d:%02d"):format(math.floor(value / 60), value % 60))
             if value > Options.DoorsHasteThreshold.Value + 5 then hasteWarned = false end
             if value <= Options.DoorsHasteThreshold.Value and not hasteWarned then
-                hasteWarned = true Library:Notify("Haste timer low: " .. value .. " seconds", 5)
+                hasteWarned = true
+                if extension.Notify then extension.Notify("Haste timer", value .. " seconds remaining")
+                else Library:Notify("Haste timer low: " .. value .. " seconds", 5) end
             end
         else hasteLabel:SetText("Haste timer: unavailable on this floor") end
     else hasteWarned = false hasteLabel:SetText("Haste timer: disabled") end
@@ -1044,6 +1107,862 @@ connect(RunService.Heartbeat, function(dt)
     applyPhysicalProperties() applyFog() applyHidingTransparency() updateExtraAlerts()
     for _, other in ipairs(Players:GetPlayers()) do if other ~= player and other.Character then register(other.Character, false) end end
 end)
+
+-- v0.4 port layer. Everything below is opt-in; no source loader/analytics is executed.
+do
+local function installReferencePort()
+    local function slider(box, id, text, default, min, max, rounding)
+        return box:AddSlider(id, {Text=text, Default=default, Min=min, Max=max, Rounding=rounding or 0, Compact=true})
+    end
+    local function val(id, fallback)
+        local option = Options[id]
+        if option and option.Value ~= nil then return option.Value end
+        return fallback
+    end
+    local function multi(box, id, text, values, defaults)
+        return box:AddDropdown(id, {Text=text, Values=values, Default=defaults or values, Multi=true, AllowNull=true})
+    end
+    local function dropdown(box, id, text, values, default)
+        return box:AddDropdown(id, {Text=text, Values=values, Default=default or 1})
+    end
+    local function badge(id, key)
+        -- SetValue also accepts modifier combinations in ObsidianUltra.
+        if Options[id.."Key"] then Options[id.."Key"]:SetValue({key, "Toggle"}) end
+    end
+
+    -- Per-category colors live beside the same toggle, not in a separate bind list.
+    local categories = {{"Item","Objectives",Color3.fromRGB(0,255,0)}, {"Exit","Doors",Color3.fromRGB(0,200,255)},
+        {"Hide","Hiding spots",Color3.fromRGB(255,170,0)}, {"Player","Players",Color3.fromRGB(255,255,255)},
+        {"Chest","Chests",Color3.fromRGB(255,255,0)}, {"Loot","Items",Color3.fromRGB(170,0,255)},
+        {"Currency","Currency",Color3.fromRGB(255,255,0)}, {"Ladder","Ladders",Color3.fromRGB(255,255,255)},
+        {"Entity","Entities",Color3.fromRGB(255,0,0)}}
+    for _, entry in ipairs(categories) do
+        Toggles["DoorsMark"..entry[1]]:AddColorPicker("DoorsColor"..entry[1],
+            {Text=entry[2],Default=entry[3],Transparency=0})
+    end
+    local esp = panels.ESPSettings
+    toggle(esp,"DoorsESPRainbow","Rainbow effect")
+    esp:AddToggle("DoorsESPDistance",{Text="Show distance",Default=true})
+    slider(esp,"DoorsESPFill","Fill transparency",0.75,0,1,2)
+    slider(esp,"DoorsESPOutline","Outline transparency",0,0,1,2)
+    slider(esp,"DoorsESPTextAlpha","Text transparency",0,0,1,2)
+    slider(esp,"DoorsESPStrokeAlpha","Text outline transparency",0,0,1,2)
+    slider(esp,"DoorsESPFade","Fade-in time",0.25,0,2,2)
+    slider(esp,"DoorsESPLimit","Render limit (labels)",64,1,240)
+    slider(esp,"DoorsESPTextSize","Text size",16,10,32)
+    dropdown(esp,"DoorsESPFont","Text font",{"Code","Gotham","Arial","Highway","SourceSans"})
+    dropdown(esp,"DoorsTracerOrigin","Tracer origin",{"Bottom","Center","Top"})
+    slider(esp,"DoorsTracerThickness","Tracer thickness",0.75,0.5,4,2)
+    toggle(esp,"DoorsESPTracers","Enable tracers")
+    slider(esp,"DoorsArrowRadius","Arrow radius",250,40,500)
+    toggle(esp,"DoorsESPArrows","Enable arrows")
+    esp:AddLabel("Up to 240 labels/tracers; 24 active Highlight instances. Arrows mark off-screen targets. Only replicated objects can be rendered.",true)
+    extension.StyleMarker = function(marker,row)
+        if not marker.Born then marker.Born=os.clock() end
+        local color = enabled("DoorsESPRainbow") and Color3.fromHSV((os.clock()*0.12)%1,0.85,1)
+            or val("DoorsColor"..row.Entry.Category, colors[row.Entry.Category])
+        marker.Color=color
+        marker.Text.TextColor3=color
+        marker.Text.Font=Enum.Font[val("DoorsESPFont","Code")]
+        marker.Text.TextSize=val("DoorsESPTextSize",16)
+        marker.Billboard.Size=UDim2.fromOffset(math.max(190,#row.Entry.Label*val("DoorsESPTextSize",16)*0.6+110),40)
+        marker.Text.Text = row.Entry.Label .. (enabled("DoorsESPDistance") and (" | %d studs"):format(math.floor(row.Distance)) or "")
+        for _, h in ipairs(marker.Highlights) do h.FillColor=color h.OutlineColor=color end
+    end
+    local function decorateMarkers()
+        local camera=workspace.CurrentCamera
+        if not camera then return end
+        local view=camera.ViewportSize
+        local center=Vector2.new(view.X/2,view.Y/2)
+        for _,marker in pairs(markers) do
+            local fade=val("DoorsESPFade",0.25)
+            local opacity=fade==0 and 1 or math.clamp((os.clock()-(marker.Born or 0))/fade,0,1)
+            marker.Text.TextTransparency=1-(1-val("DoorsESPTextAlpha",0))*opacity
+            marker.Text.TextStrokeTransparency=1-(1-val("DoorsESPStrokeAlpha",0))*opacity
+            local target=marker.Billboard.Adornee
+            if not target or not target.Parent then
+                if marker.Tracer then marker.Tracer.Visible=false end
+                if marker.Arrow then marker.Arrow.Visible=false end
+                continue
+            end
+            local point,onScreen=camera:WorldToViewportPoint(target.Position)
+            local inFront=point.Z>0
+            if enabled("DoorsESPTracers") and inFront and onScreen then
+                if not marker.Tracer then
+                    marker.Tracer=Instance.new("Frame")
+                    marker.Tracer.Name="ClaudeHubTracer";marker.Tracer.BorderSizePixel=0
+                    marker.Tracer.AnchorPoint=Vector2.new(0.5,0.5);marker.Tracer.Parent=gui
+                end
+                local origin=val("DoorsTracerOrigin","Bottom")
+                local start=Vector2.new(center.X,origin=="Top" and 0 or origin=="Center" and center.Y or view.Y)
+                local finish=Vector2.new(point.X,point.Y)
+                local delta=finish-start
+                marker.Tracer.Visible=true;marker.Tracer.BackgroundColor3=marker.Color or marker.Text.TextColor3
+                marker.Tracer.BackgroundTransparency=1-opacity
+                marker.Tracer.Position=UDim2.fromOffset((start.X+finish.X)/2,(start.Y+finish.Y)/2)
+                marker.Tracer.Size=UDim2.fromOffset(delta.Magnitude,val("DoorsTracerThickness",0.75))
+                marker.Tracer.Rotation=math.deg(math.atan2(delta.Y,delta.X))
+            elseif marker.Tracer then marker.Tracer.Visible=false end
+            if enabled("DoorsESPArrows") and (not onScreen or not inFront) then
+                if not marker.Arrow then
+                    marker.Arrow=Instance.new("TextLabel")
+                    marker.Arrow.Name="ClaudeHubArrow";marker.Arrow.BackgroundTransparency=1
+                    marker.Arrow.AnchorPoint=Vector2.new(0.5,0.5);marker.Arrow.Size=UDim2.fromOffset(26,26)
+                    marker.Arrow.Text=">";marker.Arrow.Font=Enum.Font.Code;marker.Arrow.TextSize=25
+                    marker.Arrow.TextStrokeTransparency=0;marker.Arrow.Parent=gui
+                end
+                -- Camera-local direction avoids projecting a behind-camera point to the wrong side.
+                local localPoint=camera.CFrame:PointToObjectSpace(target.Position)
+                local direction=Vector2.new(localPoint.X,-localPoint.Y)
+                if direction.Magnitude<0.001 then direction=Vector2.new(0,1) end
+                direction=direction.Unit
+                local radius=math.max(10,math.min(val("DoorsArrowRadius",250),center.X-20,center.Y-20))
+                local pos=center+direction*radius
+                marker.Arrow.Visible=true;marker.Arrow.Position=UDim2.fromOffset(pos.X,pos.Y)
+                marker.Arrow.Rotation=math.deg(math.atan2(direction.Y,direction.X))
+                marker.Arrow.TextColor3=marker.Color or marker.Text.TextColor3
+            elseif marker.Arrow then marker.Arrow.Visible=false end
+        end
+    end
+    connect(RunService.RenderStepped, decorateMarkers)
+
+    -- Notification filters are independent of the ESP selection.
+    local itemChoices={"Green Herb"}
+    local uniqueItems={["Green Herb"]=true}
+    for _,label in pairs(lootNames) do if not uniqueItems[label] then uniqueItems[label]=true table.insert(itemChoices,label) end end
+    table.sort(itemChoices)
+    multi(panels.Entities,"DoorsNotifyEntities","Entity list",entityChoices)
+    multi(panels.Entities,"DoorsNotifyItems","Item list",itemChoices)
+    toggle(panels.Entities,"DoorsNotifyDistance","Show item distance")
+    toggle(panels.Entities,"DoorsLibraryAlert","Notify library code")
+    local libraryLabel=panels.Entities:AddLabel("Library code: unavailable")
+    local notifyPanel=panels.Notify
+    toggle(notifyPanel,"DoorsNotifyChat","Notify chat (public)")
+    notifyPanel:AddInput("DoorsNotifyMessage",{Text="Message",Default="spawned!",Placeholder="spawned!",MaxLength=100,Finished=true})
+    dropdown(notifyPanel,"DoorsNotifyStyle","Notify style",{"Abysall","Doors","STX","Library"})
+    slider(notifyPanel,"DoorsNotifyVolume","Sound volume",3,0,10,1)
+    toggle(notifyPanel,"DoorsNotifySound","Play sound")
+    toggle(notifyPanel,"DoorsNotifyKeep","Keep entity notifications")
+    notifyPanel:AddLabel("Style names are local ClaudeHub recreations, not external notification loaders. Chat is public and OFF by default. Drag the notification header to move the stack.",true)
+    local noticeRoot=Instance.new("Frame")
+    noticeRoot.Name="ClaudeHubNoticeStack";noticeRoot.BackgroundTransparency=1
+    noticeRoot.Size=UDim2.fromOffset(300,36);noticeRoot.Position=UDim2.fromOffset(24,210);noticeRoot.Parent=gui
+    local handle=Instance.new("TextLabel")
+    handle.Name="DragHeader";handle.BackgroundColor3=Color3.fromRGB(20,17,28);handle.BorderSizePixel=0
+    handle.Size=UDim2.fromOffset(300,24);handle.Text="ClaudeHub notifications  |  drag"
+    handle.TextColor3=Color3.fromRGB(185,160,240);handle.Font=Enum.Font.Code;handle.TextSize=12
+    handle.Active=true;handle.Visible=false;handle.Parent=noticeRoot
+    local notices,noticeDrag,noticeOrigin,noticePosition={},nil,nil,nil
+    connect(handle.InputBegan,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            noticeDrag=input;noticeOrigin=input.Position;noticePosition=noticeRoot.AbsolutePosition
+        end
+    end)
+    connect(UIS.InputChanged,function(input)
+        if not noticeDrag then return end
+        if noticeDrag.UserInputType==Enum.UserInputType.Touch and input~=noticeDrag then return end
+        if noticeDrag.UserInputType~=Enum.UserInputType.Touch and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+        local camera=workspace.CurrentCamera;if not camera then return end
+        local delta=input.Position-noticeOrigin
+        local view=camera.ViewportSize
+        noticeRoot.Position=UDim2.fromOffset(math.clamp(noticePosition.X+delta.X,0,math.max(0,view.X-300)),
+            math.clamp(noticePosition.Y+delta.Y,0,math.max(0,view.Y-100)))
+    end)
+    connect(UIS.InputEnded,function(input)
+        if input==noticeDrag or input.UserInputType==Enum.UserInputType.MouseButton1 then noticeDrag=nil end
+    end)
+    connect(UIS.WindowFocusReleased,function() noticeDrag=nil end)
+    local function updateNotices()
+        for i=#notices,1,-1 do
+            local n=notices[i]
+            if os.clock()>=n.Expires and not (enabled("DoorsNotifyKeep") and n.Object and n.Object:IsDescendantOf(workspace)) then
+                n.Frame:Destroy();table.remove(notices,i)
+            end
+        end
+        handle.Visible=#notices>0
+        for i,n in ipairs(notices) do n.Frame.Position=UDim2.fromOffset(0,28+(i-1)*82) end
+    end
+    extension.Notify=function(title,body,obj)
+        title,body=tostring(title or "ClaudeHub"),tostring(body or "")
+        local style=val("DoorsNotifyStyle","Abysall")
+        if style=="Library" then Library:Notify(title..(body~="" and ("\n"..body) or ""),6)
+        else
+            if #notices>=6 then notices[1].Frame:Destroy();table.remove(notices,1) end
+            local frame=Instance.new("Frame")
+            frame.Name="Notice";frame.Size=UDim2.fromOffset(300,76);frame.BorderSizePixel=0
+            frame.BackgroundColor3=style=="Doors" and Color3.fromRGB(32,25,20) or Color3.fromRGB(19,17,29)
+            frame.Parent=noticeRoot
+            local border=Instance.new("UIStroke",frame)
+            border.Color=style=="Doors" and Color3.fromRGB(255,210,160) or Color3.fromRGB(133,80,255)
+            border.Thickness=style=="STX" and 2 or 1
+            Instance.new("UICorner",frame).CornerRadius=UDim.new(0,style=="Abysall" and 6 or 2)
+            local label=Instance.new("TextLabel")
+            label.BackgroundTransparency=1;label.Position=UDim2.fromOffset(10,5);label.Size=UDim2.fromOffset(270,65)
+            label.TextColor3=Color3.fromRGB(240,235,250);label.TextWrapped=true
+            label.TextXAlignment=Enum.TextXAlignment.Left;label.Font=style=="Doors" and Enum.Font.Highway or Enum.Font.Code
+            label.TextSize=14;label.RichText=false;label.Text=title.."\n"..body;label.Parent=frame
+            local close=Instance.new("TextButton")
+            close.Size=UDim2.fromOffset(22,20);close.Position=UDim2.fromOffset(277,0)
+            close.Text="x";close.BackgroundTransparency=1;close.TextColor3=label.TextColor3;close.Parent=frame
+            -- Per-notice handler is disposed with its button; no session-level connection accumulation.
+            close.Activated:Connect(function()
+                for i,n in ipairs(notices) do if n.Frame==frame then frame:Destroy();table.remove(notices,i) break end end
+                updateNotices()
+            end)
+            table.insert(notices,{Frame=frame,Expires=os.clock()+6,Object=obj});updateNotices()
+        end
+        if enabled("DoorsNotifySound") then
+            local sound=Instance.new("Sound")
+            sound.Name="ClaudeHubNoticeSound";sound.SoundId="rbxassetid://4590662766"
+            sound.Volume=val("DoorsNotifyVolume",3)/10;sound.Parent=gui;sound:Play()
+            task.delay(4,function() if sound.Parent then sound:Destroy() end end)
+        end
+    end
+    local lastChat=-math.huge
+    extension.EntityAlert=function(obj,label)
+        if val("DoorsNotifyEntities",{})[label]~=true then return false end
+        extension.Notify(label.." detected",val("DoorsNotifyMessage","spawned!"),obj)
+        if enabled("DoorsNotifyChat") and os.clock()-lastChat>=2 then
+            lastChat=os.clock()
+            local text=label.." "..tostring(val("DoorsNotifyMessage","spawned!")):sub(1,100)
+            task.spawn(function()
+                if not alive or not enabled("DoorsNotifyChat") then return end
+                local ok,err=pcall(function()
+                    local chat=game:GetService("TextChatService")
+                    local channels=chat:FindFirstChild("TextChannels")
+                    local general=channels and channels:FindFirstChild("RBXGeneral")
+                    if general then general:SendAsync(text)
+                    else
+                        local events=RS:FindFirstChild("DefaultChatSystemChatEvents")
+                        local send=events and events:FindFirstChild("SayMessageRequest")
+                        assert(send and send:IsA("RemoteEvent"),"No supported chat channel")
+                        send:FireServer(text,"All")
+                    end
+                end)
+                if not ok and alive then Library:Notify("Chat notification failed: "..tostring(err),4) end
+            end)
+        end
+        return true
+    end
+    extension.ItemAlert=function(obj,label)
+        if val("DoorsNotifyItems",{})[label]~=true then return end
+        local body="Spawned in a loaded room"
+        if enabled("DoorsNotifyDistance") then
+            local anchor=markerTarget(obj,"Loot");local r=root()
+            if anchor and r then body..=(" | %d studs"):format(math.floor((anchor.Position-r.Position).Magnitude)) end
+        end
+        extension.Notify(label,body)
+    end
+    notifyPanel:AddButton({Text="Test Notification",Func=function() extension.Notify("Test notification","ClaudeHub DOORS "..VERSION) end})
+    notifyPanel:AddButton({Text="Clear notifications",Func=function()
+        for _,n in ipairs(notices) do n.Frame:Destroy() end table.clear(notices);handle.Visible=false
+    end})
+    notifyPanel:AddButton({Text="Reset notification position",Func=function() noticeDrag=nil;noticeRoot.Position=UDim2.fromOffset(24,210) end})
+
+    -- Camera adapter: require only after opt-in and only the known game module.
+    local cameraOwned,tableOwned,thirdParts,ambientOwned={},{},{},{}
+    extension.BeforeBright=function() restore(ambientOwned) end
+    local mainGame,moduleObject,modulePending,lastModuleTry=nil,nil,false,-math.huge
+    local adapterLabel=panels.Camera:AddLabel("Game camera adapter: not requested")
+    local function mainUI() local pg=player:FindFirstChild("PlayerGui") return pg and pg:FindFirstChild("MainUI") end
+    local function path(obj,...)
+        for _,name in ipairs({...}) do obj=obj and obj:FindFirstChild(name) end return obj
+    end
+    local function requestMainGame()
+        if modulePending or os.clock()-lastModuleTry<5 then return end
+        local module=path(mainUI(),"Initiator","Main_Game")
+        if moduleObject==module and mainGame then return end
+        lastModuleTry=os.clock()
+        if not module or not module:IsA("ModuleScript") then adapterLabel:SetText("Game camera adapter: Main_Game unavailable") return end
+        modulePending=true
+        task.spawn(function()
+            local ok,result=pcall(require,module)
+            modulePending=false
+            if not alive then return end
+            restore(tableOwned)
+            if ok and type(result)=="table" then mainGame=result;moduleObject=module;adapterLabel:SetText("Game camera adapter: loaded")
+            else mainGame=nil;moduleObject=nil;adapterLabel:SetText("Game camera adapter: require unsupported / failed") end
+        end)
+    end
+    toggle(panels.Camera,"DoorsAmbient","Ambient",function(value) if not value then restore(ambientOwned) end end)
+        :AddColorPicker("DoorsAmbientColor",{Text="Ambient",Default=Color3.fromRGB(255,255,255),Transparency=0})
+    toggle(panels.Camera,"DoorsNoShake","Remove camera shake")
+    toggle(panels.Camera,"DoorsNoBobbing","Remove camera bobbing")
+    toggle(panels.Camera,"DoorsRemoveCutscenes","Remove cutscenes (known modules)")
+    toggle(panels.Camera,"DoorsThirdPerson","Third person",function(value)
+        if not value then restore(thirdParts) if extension.ResetThirdPerson then extension.ResetThirdPerson() end end
+    end)
+    badge("DoorsThirdPerson","T")
+    slider(panels.Camera,"DoorsThirdX","X offset",1.5,-10,10,1)
+    slider(panels.Camera,"DoorsThirdY","Y offset",1,-10,10,1)
+    slider(panels.Camera,"DoorsThirdZ","Z offset",5,-10,10,1)
+    toggle(panels.Camera,"DoorsThirdWall","Wall check")
+    toggle(panels.Camera,"DoorsViewmodel","Viewmodel offset")
+    slider(panels.Camera,"DoorsViewX","Viewmodel X",0,-10,10,1)
+    slider(panels.Camera,"DoorsViewY","Viewmodel Y",0,-10,10,1)
+    slider(panels.Camera,"DoorsViewZ","Viewmodel Z",0,-10,10,1)
+    panels.Camera:AddLabel("Shake/bobbing/viewmodel need a compatible Main_Game table. Third person supports normal DOORS Scriptable cameras; hiding/animation states and spectating suspend it. FOV is independently opt-in.",true)
+    local lastAppliedCamera,lastBase,lastResult
+    local function undoOffset()
+        if lastAppliedCamera and lastAppliedCamera.Parent and lastResult and lastAppliedCamera.CFrame==lastResult then
+            lastAppliedCamera.CFrame=lastBase
+        end
+        lastAppliedCamera,lastBase,lastResult=nil,nil,nil
+    end
+    extension.ResetThirdPerson=undoOffset
+    local function beforeCamera() undoOffset() end
+    local function cameraStep()
+        if not alive or not ready then return end
+        local camera=workspace.CurrentCamera
+        if not camera then return end
+        local h=hum()
+        local third=enabled("DoorsThirdPerson") and h and h.Health>0 and not extension.Spectating
+            and player:GetAttribute("Alive")~=false and player.Character~=nil
+            and player.Character:GetAttribute("Hiding")~=true
+            and player.Character:GetAttribute("AnimatingClient")~=true
+        if not third then restore(thirdParts) return end
+        local char=player.Character
+        local base=camera.CFrame
+        local offset=Vector3.new(val("DoorsThirdX",1.5),val("DoorsThirdY",1),val("DoorsThirdZ",5))
+        local desired=base*CFrame.new(offset)
+        if enabled("DoorsThirdWall") and (desired.Position-base.Position).Magnitude>0.001 then
+            local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances={char,highlights};params.RespectCanCollide=true
+            local diff=desired.Position-base.Position
+            local hit=workspace:Raycast(base.Position,diff,params)
+            if hit then
+                local length=math.max(0,(hit.Position-base.Position).Magnitude-0.3)
+                desired=base+diff.Unit*math.min(diff.Magnitude,length)
+            end
+        end
+        lastAppliedCamera,lastBase,lastResult=camera,base,desired;camera.CFrame=desired
+        for _,part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name~="HumanoidRootPart" and part.Name~="Collision" and part.Name~="CollisionPart" then
+                override(thirdParts,part,"LocalTransparencyModifier",0)
+                if part.Name=="Head" or part.Parent:IsA("Accessory") then override(thirdParts,part,"Transparency",0) end
+            end
+        end
+        for part in pairs(thirdParts) do
+            if not part:IsDescendantOf(char) then restore(thirdParts,part) end
+        end
+    end
+    local cameraPre="ClaudeHubDoorsPreCamera_"..player.UserId
+    local cameraPost="ClaudeHubDoorsPostCamera_"..player.UserId
+    RunService:BindToRenderStep(cameraPre,Enum.RenderPriority.Camera.Value-1,beforeCamera)
+    RunService:BindToRenderStep(cameraPost,Enum.RenderPriority.Last.Value+1,cameraStep)
+    onCleanup(function()
+        RunService:UnbindFromRenderStep(cameraPre);RunService:UnbindFromRenderStep(cameraPost)
+        undoOffset();restore(thirdParts);restore(cameraOwned);restore(tableOwned);restore(ambientOwned)
+    end)
+    local function updateCameraAdapter()
+        if enabled("DoorsAmbient") then
+            -- Fullbright owns Ambient when both are on, avoiding two competing writers.
+            if enabled("DoorsBright") then restore(ambientOwned)
+            else override(ambientOwned,Lighting,"Ambient",val("DoorsAmbientColor",Color3.fromRGB(255,255,255))) end
+        else restore(ambientOwned) end
+        local need=enabled("DoorsNoShake") or enabled("DoorsNoBobbing") or enabled("DoorsViewmodel")
+        if need then requestMainGame() end
+        if not mainGame then return end
+        local wanted={}
+        if enabled("DoorsNoShake") and mainGame.csgo~=nil then override(tableOwned,mainGame,"csgo",CFrame.new());wanted.csgo=true end
+        if enabled("DoorsViewmodel") and mainGame.tooloffset~=nil then
+            override(tableOwned,mainGame,"tooloffset",Vector3.new(val("DoorsViewX",0),val("DoorsViewY",0),val("DoorsViewZ",0)));wanted.tooloffset=true
+        end
+        if enabled("DoorsNoBobbing") and type(mainGame.spring)=="table" and type(mainGame.spring.Speed)=="number" then
+            override(tableOwned,mainGame.spring,"Speed",9e9)
+        else if mainGame.spring then restore(tableOwned,mainGame.spring) end end
+        local fields=tableOwned[mainGame]
+        if fields then
+            for name,record in pairs(fields) do if not wanted[name] then
+                if mainGame[name]==record.Applied then mainGame[name]=record.Before end fields[name]=nil
+            end end
+        end
+    end
+
+    -- Reversible visual modules. Unknown layouts are skipped instead of WaitForChild hangs.
+    local visualObjects=setmetatable({}, {__mode="k"})
+    local visualOwned={}
+    local effectEntries={{"DoorsNoGlitchScare","Disable Glitch jumpscare","Glitch"},
+        {"DoorsNoTimothyScare","Disable Timothy jumpscare","SpiderJumpscare"},
+        {"DoorsNoVoidScare","Disable Void jumpscare","Void"},
+        {"DoorsNoHideVignette","Disable Hide vignette"}, {"DoorsNoFiredamp","Disable firedamp effect"},
+        {"DoorsNoEntityScares","Disable entity jumpscares","Jumpscares"}}
+    for _,entry in ipairs(effectEntries) do toggle(panels.Effects,entry[1],entry[2]) end
+    panels.Effects:AddLabel("Local visuals only, NOT damage protection. Renaming a module cannot stop a function already cached by the game. Firedamp protection does not add oxygen.",true)
+    local cutscenes={Figure=true,FigureEnd=true,FigureHotelEnd=true,FigureHotelFire=true,SeekIntroFools=true,
+        SeekIntroHotel=true,SeekIntroMines=true,SeekIntroMines2=true,SerewSeekDrain=true,SewerSeekLower=true,GrumbleNestEnd=true,EyestalkIntro=true}
+    local removeNames={Screech="DoorsRemoveScreech",Shade="DoorsRemoveHalt",A90="DoorsRemoveA90",Dread="DoorsRemoveDread",Surge="DoorsRemoveSurge"}
+    local bypass=Tabs.Exploits:AddLeftGroupbox("Bypass | local hazards","shield")
+    local hazardSpecs={{"Giggle","GiggleCeiling"},{"Dupe","FakeDoor","DoorFake"},{"GloombatEggs","GloomPile"},
+        {"SeekObstructions","ChandelierObstruction","Seek_Arm","SeekFloodline"},{"Vacuum","SideroomSpace"},
+        {"Killbricks","Lava"},{"SeekingWall","ScaryWall"},{"Snare","Snare"},{"Banana","BananaPeel"},{"Jeff","JeffTheKiller"}}
+    local hazardToggles={}
+    for _,entry in ipairs(hazardSpecs) do
+        local id="DoorsBypass"..entry[1];hazardToggles[id]=true
+        toggle(bypass,id,"Bypass "..entry[1].." (local)")
+    end
+    bypass:AddLabel("These change only replicated local hitboxes/prompts. Server-validated damage may still apply. Jeff is not killed and entities are not destroyed.",true)
+    local removed=Tabs.Exploits:AddRightGroupbox("Remove | module lookup","ghost")
+    for _,entry in ipairs({{"Screech","Screech"},{"Halt","Halt"},{"A90","A-90"},{"Dread","Dread"},{"Surge","Surge"}}) do
+        toggle(removed,"DoorsRemove"..entry[1],"Remove "..entry[2].." (future lookups)")
+    end
+    removed:AddLabel("Stops future name-based client module lookups only. Already-running/cached modules and server damage are not disabled.",true)
+    local unsupported=Tabs.Exploits:AddRightGroupbox("Compatibility / not ported","info")
+    unsupported:AddLabel("Not included: Anticheat Bypass, Velocity Manipulation, Position/Crouch Spoof, Infinite Items, No Damage hooks, Eyes/Lookman remote spoof, Auto Heartbeat and random-code guessing. These old hooks depend on executor and game internals; no fake working toggles are shown.",true)
+    local adapterStatus=unsupported:AddLabel("Local adapters: waiting")
+    local audioBox=Tabs.Exploits:AddLeftGroupbox("Audio","volume-2")
+    toggle(audioBox,"DoorsMuteSteps","Remove footstep sounds")
+    toggle(audioBox,"DoorsMuteJam","Remove Jammin music")
+    toggle(audioBox,"DoorsMuteInteract","Remove interacting sounds")
+    local audioObjects=setmetatable({}, {__mode="k"})
+    local audioOwned={}
+    local hazards=setmetatable({}, {__mode="k"})
+    local hazardOwned={}
+    local hazardNameMap={}
+    for _,entry in ipairs(hazardSpecs) do for i=2,#entry do hazardNameMap[entry[i]]=entry[1] end end
+    local relevantNames={Glitch=true,SpiderJumpscare=true,Void=true,Jumpscares=true,HideVignette=true,LiveFiredamp=true}
+    local function watchObject(obj)
+        if obj:IsA("Sound") or obj:IsA("EqualizerSoundEffect") then audioObjects[obj]=true end
+        if hazardNameMap[obj.Name] then hazards[obj]=hazardNameMap[obj.Name] end
+        if obj:IsA("ModuleScript") and (relevantNames[obj.Name] or removeNames[obj.Name] or cutscenes[obj.Name])
+            or obj.Name=="HideVignette" or obj.Name=="LiveFiredamp" then
+            visualObjects[obj]=obj.Name
+        end
+    end
+    for _,obj in ipairs(workspace:GetDescendants()) do watchObject(obj) end
+    for _,obj in ipairs(RS:GetDescendants()) do watchObject(obj) end
+    local pg=player:FindFirstChild("PlayerGui")
+    if pg then for _,obj in ipairs(pg:GetDescendants()) do watchObject(obj) end connect(pg.DescendantAdded,watchObject) end
+    local soundService=game:GetService("SoundService")
+    for _,obj in ipairs(soundService:GetDescendants()) do watchObject(obj) end
+    connect(soundService.DescendantAdded,watchObject)
+    connect(workspace.DescendantAdded,watchObject);connect(RS.DescendantAdded,watchObject)
+    local function activeField(pool,obj,name)
+        local fields=pool[obj];local entry=fields and fields[name]
+        if entry then
+            pcall(function() if obj[name]==entry.Applied then obj[name]=entry.Before end end)
+            fields[name]=nil
+            if not next(fields) then pool[obj]=nil end
+        end
+    end
+    connect(RunService.RenderStepped, updateCameraAdapter)
+    local function updateVisualEffects()
+        local moduleCount=0
+        for obj,name in pairs(visualObjects) do
+            if not obj.Parent then restore(visualOwned,obj);visualObjects[obj]=nil continue end
+            local ownUI=obj:IsDescendantOf(gui)
+            local relevant=(pg and obj:IsDescendantOf(pg)) or obj:IsDescendantOf(RS)
+            local disable=false
+            if relevant and not ownUI and obj:IsA("ModuleScript") then
+                for _,entry in ipairs(effectEntries) do if entry[3]==name and enabled(entry[1]) then disable=true end end
+                if cutscenes[name] and enabled("DoorsRemoveCutscenes") then
+                    local parentName=obj.Parent.Name
+                    disable=parentName=="Cutscenes" or obj.Parent.Name=="FloorReplicated"
+                end
+                if removeNames[name] and enabled(removeNames[name]) then disable=true end
+                if relevantNames[name] or removeNames[name] then moduleCount+=1 end
+            end
+            if disable then override(visualOwned,obj,"Name",name.."_ClaudeHubDisabled") else activeField(visualOwned,obj,"Name") end
+            if name=="HideVignette" and relevant and obj:IsA("GuiObject") and enabled("DoorsNoHideVignette") then
+                override(visualOwned,obj,"Visible",false)
+            else activeField(visualOwned,obj,"Visible") end
+            if name=="LiveFiredamp" and enabled("DoorsNoFiredamp") then
+                if obj:IsA("PostEffect") or obj:IsA("ParticleEmitter") then override(visualOwned,obj,"Enabled",false)
+                elseif obj:IsA("GuiObject") then override(visualOwned,obj,"Visible",false) end
+            elseif name=="LiveFiredamp" then restore(visualOwned,obj) end
+        end
+        -- Firedamp is an attribute on streamed rooms; do not spoof CurrentRoom.
+        local rooms=roomFolder()
+        if rooms then for _,room in ipairs(rooms:GetChildren()) do
+            if enabled("DoorsNoFiredamp") and room:GetAttribute("Firedamp")~=nil then override(visualOwned,room,"Firedamp",false,true)
+            else
+                local fields=visualOwned[room]
+                if fields and fields.Firedamp then restore(visualOwned,room) end
+            end
+        end end
+        adapterStatus:SetText("Recognized client modules: "..moduleCount.." | unknown layouts are skipped")
+    end
+    local function updateAudio()
+        for obj in pairs(audioObjects) do
+            if not obj.Parent then restore(audioOwned,obj);audioObjects[obj]=nil continue end
+            local char=player.Character
+            local ownChar=char and obj:IsDescendantOf(char)
+            local name=obj.Name:lower()
+            local parentName=obj.Parent.Name
+            local mute=enabled("DoorsMuteSteps") and ownChar and (name:find("footstep") or name=="running" or name=="crouching")
+                or enabled("DoorsMuteJam") and (obj.Name=="Jam" or obj.Name=="Jamming")
+                or enabled("DoorsMuteInteract") and (parentName=="PromptService" and (name=="triggered" or name=="holding" or name=="notification")
+                    or parentName=="Reminder" and name=="caption")
+            if mute and obj:IsA("Sound") then override(audioOwned,obj,"Volume",0)
+            elseif mute and obj:IsA("EqualizerSoundEffect") then override(audioOwned,obj,"Enabled",false)
+            else restore(audioOwned,obj) end
+        end
+    end
+    local function updateHazards()
+        for obj,kind in pairs(hazards) do
+            if not obj:IsDescendantOf(workspace) then hazards[obj]=nil continue end
+            local on=enabled("DoorsBypass"..kind) and (kind~="Dupe" or isDupeDoor(obj))
+            local parts=obj:IsA("BasePart") and {obj} or obj:GetDescendants()
+            for _,part in ipairs(parts) do
+                local hitbox=kind~="Giggle" or part.Name=="Hitbox"
+                if kind=="Dupe" then hitbox=part.Name=="Hidden" end
+                if kind=="Vacuum" then hitbox=part.Name=="Collision" end
+                if part:IsA("BasePart") and hitbox and on then
+                    override(hazardOwned,part,"CanTouch",false)
+                    if kind=="SeekingWall" or kind=="Jeff" then override(hazardOwned,part,"CanCollide",false)
+                    elseif kind=="Vacuum" or part.Name=="SeekFloodline" then override(hazardOwned,part,"CanCollide",true) end
+                end
+            end
+            if kind=="Dupe" then
+                local unlock=path(obj,"Lock","UnlockPrompt")
+                if unlock and unlock:IsA("ProximityPrompt") and on then override(hazardOwned,unlock,"Enabled",false) end
+            end
+        end
+        -- Restore only fields not desired this tick using a fresh reconciliation pool.
+    end
+    -- Each hazard poll reconciles to the baseline, then reapplies opt-in local writes.
+    local function reconcileHazards() restore(hazardOwned);updateHazards() end
+    onCleanup(function() restore(visualOwned);restore(audioOwned);restore(hazardOwned) end)
+
+    -- Character additions: own only the parts and constraints created/modified here.
+    local noclipOwned,flightOwned={},{ }
+    local flightRoot,flightAttachment,flightVelocity,flightAlign
+    local function stopFly()
+        for _,obj in ipairs({flightVelocity,flightAlign,flightAttachment}) do if obj then obj:Destroy() end end
+        if flightRoot and flightRoot.Parent and flightVelocity then
+            pcall(function() flightRoot.AssemblyLinearVelocity=Vector3.zero end)
+        end
+        flightRoot,flightAttachment,flightVelocity,flightAlign=nil,nil,nil,nil
+        restore(flightOwned)
+    end
+    toggle(movement,"DoorsFly","Fly",function(v) if not v then stopFly() end end);badge("DoorsFly","G")
+    slider(movement,"DoorsFlySpeed","Fly speed",20,1,80)
+    toggle(movement,"DoorsNoclip","Noclip",function(v) if not v then restore(noclipOwned) end end);badge("DoorsNoclip","N")
+    movement:AddLabel("Fly: WASD + Space/Ctrl, camera-relative; menu/text input pauses movement. Fly uses G; Fast Interact uses F, so their default binds do not conflict. Server correction can still occur.",true)
+    local function flyStep()
+        local char,h,r=player.Character,hum(),root()
+        if enabled("DoorsNoclip") and char and h and h.Health>0 then
+            for _,part in ipairs(char:GetDescendants()) do if part:IsA("BasePart") then override(noclipOwned,part,"CanCollide",false) end end
+            for part in pairs(noclipOwned) do if not part:IsDescendantOf(char) then restore(noclipOwned,part) end end
+        else restore(noclipOwned) end
+        if not enabled("DoorsFly") or not r or not h or h.Health<=0 or r.Anchored or char:GetAttribute("Hiding")==true then stopFly() return end
+        if flightRoot~=r then
+            stopFly();flightRoot=r
+            flightAttachment=Instance.new("Attachment");flightAttachment.Name="ClaudeHubFlight";flightAttachment.Parent=r
+            flightVelocity=Instance.new("LinearVelocity");flightVelocity.Name="ClaudeHubFlightVelocity"
+            flightVelocity.Attachment0=flightAttachment;flightVelocity.RelativeTo=Enum.ActuatorRelativeTo.World
+            flightVelocity.MaxForce=math.huge;flightVelocity.Parent=r
+            flightAlign=Instance.new("AlignOrientation");flightAlign.Name="ClaudeHubFlightOrientation"
+            flightAlign.Mode=Enum.OrientationAlignmentMode.OneAttachment;flightAlign.Attachment0=flightAttachment
+            flightAlign.MaxTorque=math.huge;flightAlign.Responsiveness=20;flightAlign.Parent=r
+        end
+        override(flightOwned,h,"AutoRotate",false)
+        local vector=Vector3.zero
+        local camera=workspace.CurrentCamera
+        if camera and focused and not Library.Toggled and not Library.IsPicking and not UIS:GetFocusedTextBox() then
+            local function down(key) return UIS:IsKeyDown(Enum.KeyCode[key]) and 1 or 0 end
+            vector=camera.CFrame.LookVector*(down("W")-down("S"))+camera.CFrame.RightVector*(down("D")-down("A"))
+                +Vector3.new(0,down("Space")-math.max(down("LeftControl"),down("RightControl")),0)
+            if vector.Magnitude>1 then vector=vector.Unit end
+        end
+        flightVelocity.VectorVelocity=vector*val("DoorsFlySpeed",20)
+        if camera then flightAlign.CFrame=camera.CFrame.Rotation end
+    end
+    connect(RunService.PreSimulation,flyStep)
+    onCleanup(function() stopFly();restore(noclipOwned) end)
+
+    -- Self: independent, reversible prompt overrides. Default multiplier is exactly 1.
+    local promptOwned={}
+    slider(interaction,"DoorsPromptReach","Prompt reach multiplier",1,1,3,1)
+    toggle(interaction,"DoorsInstantPrompts","Instant prompts")
+    toggle(interaction,"DoorsPromptClip","Prompt clip")
+    interaction:AddLabel("Reach/clip are optional local prompt overrides. Server validation may reject them. Fast Interact still respects Enabled, its ignore list, and the currently configured range.",true)
+    local function updatePrompts()
+        for prompt in pairs(prompts) do
+            if not prompt:IsDescendantOf(workspace) then restore(promptOwned,prompt);prompts[prompt]=nil continue end
+            if not activePrompt or activePrompt.Prompt~=prompt then
+                if enabled("DoorsInstantPrompts") then override(promptOwned,prompt,"HoldDuration",0)
+                else activeField(promptOwned,prompt,"HoldDuration") end
+            end
+            if enabled("DoorsPromptClip") then override(promptOwned,prompt,"RequiresLineOfSight",false)
+            else activeField(promptOwned,prompt,"RequiresLineOfSight") end
+            local multiplier=val("DoorsPromptReach",1)
+            if multiplier>1 then
+                local entry=promptOwned[prompt] and promptOwned[prompt].MaxActivationDistance
+                local base=entry and prompt.MaxActivationDistance==entry.Applied and entry.Before or prompt.MaxActivationDistance
+                override(promptOwned,prompt,"MaxActivationDistance",base*multiplier)
+            else activeField(promptOwned,prompt,"MaxActivationDistance") end
+        end
+    end
+    onCleanup(function() finishPrompt();restore(promptOwned) end)
+    local automation=Tabs.Main:AddRightGroupbox("Automation","wand-sparkles")
+    automation:AddToggle("DoorsAutoInteract",{Text="Auto interact (hold key)",Default=false,Callback=function(v) if not v then finishPrompt() end end})
+        :AddKeyPicker("DoorsAutoInteractKey",{Default="R",Text="Auto interact",Mode="Hold",Modes={"Hold","Toggle"},SyncToggleState=false,NoUI=true})
+    automation:AddLabel("Uses the same nearest-prompt search and ignore list as Fast Interact; not a second competing interaction loop.",true)
+    toggle(automation,"DoorsAutoPadlock","Auto unlock padlock (known code)")
+    slider(automation,"DoorsPadlockRange","Unlock distance",10,2,20)
+    toggle(automation,"DoorsAutoAnchor","Auto solve anchors (visible hint)")
+    toggle(automation,"DoorsSpectate","Spectate entity")
+    dropdown(automation,"DoorsSpectateMode","Spectate mode",{"Player to entity","Entity camera"})
+    multi(automation,"DoorsSpectateEntities","Spectate entity list",entityChoices)
+    automation:AddLabel("Padlock only submits a complete discovered code; no guessing. Anchor uses the current visible designation/code, proximity and an existing AnchorRemote. Unsupported floors skip these adapters.",true)
+    local automationLabel=automation:AddLabel("Automation: idle")
+    local function libraryCode()
+        local char=player.Character;local pack=player:FindFirstChild("Backpack")
+        local paper=char and (char:FindFirstChild("LibraryHintPaper") or char:FindFirstChild("LibraryHintPaperHard"))
+            or pack and (pack:FindFirstChild("LibraryHintPaper") or pack:FindFirstChild("LibraryHintPaperHard"))
+        local ui=paper and paper:FindFirstChild("UI")
+        local hints=path(player:FindFirstChild("PlayerGui"),"PermUI","Hints")
+        if not ui or not hints then return nil end
+        local count=dataValue("Floor")=="Fools" and 10 or 5
+        local code=table.create(count,"_")
+        for _,hint in ipairs(hints:GetChildren()) do
+            if hint:IsA("ImageLabel") then
+                local number=hint:FindFirstChild("TextLabel")
+                if number and number:IsA("TextLabel") and number.Text:match("^%d$") then
+                    for _,shape in ipairs(ui:GetChildren()) do
+                        local index=tonumber(shape.Name)
+                        if shape:IsA("ImageLabel") and index and code[index] and shape.ImageRectOffset==hint.ImageRectOffset then code[index]=number.Text end
+                    end
+                end
+            end
+        end
+        return table.concat(code)
+    end
+    local lastLibrary,lastSubmit,lastAnchorSubmit=nil,-math.huge,-math.huge
+    local anchorBusy=false
+    local puzzleObjects=setmetatable({}, {__mode="k"})
+    local function watchPuzzle(obj)
+        if obj.Name=="Padlock" or obj.Name=="MinesAnchor" then puzzleObjects[obj]=true end
+    end
+    for _,obj in ipairs(workspace:GetDescendants()) do watchPuzzle(obj) end
+    connect(workspace.DescendantAdded,watchPuzzle)
+    local function remotes() return RS:FindFirstChild("RemotesFolder") or RS:FindFirstChild("EntityInfo") or RS:FindFirstChild("Bricks") end
+    local function updateAutomation()
+        local code=libraryCode()
+        libraryLabel:SetText("Library code: "..tostring(code or "unavailable"))
+        if enabled("DoorsLibraryAlert") and code and code~=lastLibrary then extension.Notify("Library code",code);lastLibrary=code end
+        if not enabled("DoorsLibraryAlert") then lastLibrary=nil end
+        local r,h=root(),hum()
+        if not r or not h or h.Health<=0 or not focused or Library.Toggled or UIS:GetFocusedTextBox() then return end
+        for obj in pairs(puzzleObjects) do
+            if not obj:IsDescendantOf(workspace) then puzzleObjects[obj]=nil continue end
+            local part=obj:IsA("BasePart") and obj or obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart",true)
+            if not part then continue end
+            local distance=(r.Position-part.Position).Magnitude
+            if obj.Name=="Padlock" and enabled("DoorsAutoPadlock") and code and not code:find("_")
+                and distance<=val("DoorsPadlockRange",10) and os.clock()-lastSubmit>=2 then
+                local remote=path(remotes(),"PL")
+                if remote and remote:IsA("RemoteEvent") then lastSubmit=os.clock();remote:FireServer(code);automationLabel:SetText("Padlock: submitted known code")
+                else automationLabel:SetText("Padlock: PL remote unavailable") end
+            elseif obj.Name=="MinesAnchor" and enabled("DoorsAutoAnchor") and not obj:GetAttribute("Activated") and not anchorBusy and os.clock()-lastAnchorSubmit>=2 then
+                local hint=path(mainUI(),"AnchorHintFrame")
+                local designation=path(hint,"AnchorCode") or path(hint,"Anchor")
+                local sign=path(obj,"Sign","TextLabel")
+                local number=path(hint,"Code")
+                local prompt=obj:FindFirstChild("ActivateEventPrompt",true)
+                local remote=obj:FindFirstChild("AnchorRemote")
+                -- Never solve another anchor using the current hint's code.
+                if designation and sign and number and designation.Text==sign.Text and number.Text:match("^%d+$")
+                    and prompt and prompt:IsA("ProximityPrompt") and distance<=prompt.MaxActivationDistance
+                    and remote and remote:IsA("RemoteFunction") then
+                    lastAnchorSubmit=os.clock();anchorBusy=true
+                    task.spawn(function()
+                        local ok=pcall(function() if alive and enabled("DoorsAutoAnchor") then remote:InvokeServer(number.Text) end end)
+                        anchorBusy=false
+                        if alive then automationLabel:SetText(ok and "Anchor: visible code submitted" or "Anchor: request failed") end
+                    end)
+                end
+            end
+        end
+    end
+    local spectateOwned={}
+    local function updateSpectate()
+        extension.Spectating=false
+        if not enabled("DoorsSpectate") then restore(spectateOwned) return end
+        local camera=workspace.CurrentCamera;local r=root()
+        if not camera or not r then restore(spectateOwned) return end
+        local nearest,best
+        for obj,entry in pairs(candidates) do
+            if entry.Category=="Entity" and entityNames[obj.Name] and obj:IsDescendantOf(workspace)
+                and val("DoorsSpectateEntities",{})[entry.Label] then
+                local part=markerTarget(obj,"Entity")
+                if part then local d=(r.Position-part.Position).Magnitude if not best or d<best then nearest=part;best=d end end
+            end
+        end
+        if not nearest then restore(spectateOwned) return end
+        for old in pairs(spectateOwned) do if old~=camera then restore(spectateOwned,old) end end
+        if camera.CameraType==Enum.CameraType.Scriptable then restore(spectateOwned) return end
+        extension.Spectating=true
+        if val("DoorsSpectateMode","Player to entity")=="Entity camera" then
+            activeField(spectateOwned,camera,"CFrame")
+            override(spectateOwned,camera,"CameraSubject",nearest)
+        else
+            activeField(spectateOwned,camera,"CameraSubject")
+            -- This mode adjusts the rendered camera only, never the character's orientation.
+            local delta=nearest.Position-camera.CFrame.Position
+            if delta.Magnitude>0.01 then override(spectateOwned,camera,"CFrame",CFrame.lookAt(camera.CFrame.Position,nearest.Position)) end
+        end
+    end
+    connect(RunService.RenderStepped,updateSpectate)
+    onCleanup(function() extension.Spectating=false;restore(spectateOwned) end)
+
+    local misc=Tabs.Main:AddRightGroupbox("Miscellaneous","ellipsis")
+    local function remoteButton(text,name,tooltip)
+        misc:AddButton({Text=text,DoubleClick=true,Tooltip=tooltip,Func=function()
+            local remote=path(remotes(),name)
+            if not remote or not remote:IsA("RemoteEvent") then Library:Notify(text..": compatible remote unavailable",4) return end
+            local ok,err=pcall(function() remote:FireServer() end)
+            if not ok then Library:Notify(text..": "..tostring(err),4) end
+        end})
+    end
+    remoteButton("Play Again","PlayAgain","Double-click to request a new run; availability is controlled by the game.")
+    remoteButton("Return to Lobby","Lobby","Double-click to request a return to the lobby.")
+    -- Revive can consume a limited inventory item. Require an explicit one-shot confirmation.
+    misc:AddButton({Text="Revive (uses your revive)",DoubleClick=true,Tooltip="May consume one of your revives; no purchase is initiated. Double-click to confirm.",Func=function()
+        if player:GetAttribute("Alive")~=false then Library:Notify("Revive is available only after death",4) return end
+        local remote=path(remotes(),"Revive")
+        if remote and remote:IsA("RemoteEvent") then remote:FireServer() else Library:Notify("Revive remote unavailable",4) end
+    end})
+    misc:AddButton({Text="Reset Character",DoubleClick=true,Tooltip="Kills your character locally; double-click to confirm.",Func=function() local h=hum() if h then h.Health=0 end end})
+    misc:AddLabel("These buttons execute only when double-clicked. Revive is not free and is not automatic. The original Loader.luau remains compatible; this is still one Doors.luau module, including lobby UI.",true)
+
+    -- Remaining portable General controls from the reference (all OFF).
+    toggle(interaction,"DoorsDoorReach","Door reach (server request)")
+    slider(interaction,"DoorsDoorReachRange","Door reach distance",15,5,75)
+    toggle(interaction,"DoorsAntiIdle","Disable idle kick (VirtualUser)")
+    toggle(movement,"DoorsClosetDelay","Remove closet exit delay")
+    local lastExit=-math.huge
+    connect(player.Idled,function()
+        if not alive or not enabled("DoorsAntiIdle") then return end
+        local ok=pcall(function()
+            local virtualUser=game:GetService("VirtualUser")
+            virtualUser:CaptureController();virtualUser:ClickButton2(Vector2.new())
+        end)
+        if not ok and alive then Library:Notify("Anti-idle: VirtualUser is unavailable in this executor",4) end
+    end)
+    toggle(automation,"DoorsAutoCloset","Auto closet (nearby empty spot)");badge("DoorsAutoCloset","Q")
+    multi(automation,"DoorsAutoClosetIgnore","Auto closet: ignore entities",entityChoices,{})
+    slider(automation,"DoorsAutoClosetRange","Threat radius",150,25,500)
+    toggle(automation,"DoorsAutoBreaker","Auto breaker box (after interaction)")
+    automation:AddLabel("Auto Closet never auto-exits: a streamed-out threat is not proof of safety. It only enters a nearby unoccupied spot with a usable HidePrompt. Breaker responds to changing displayed instructions, not a guessed solution.",true)
+    local doorTimes=setmetatable({}, {__mode="k"})
+    local breakerCodes=setmetatable({}, {__mode="k"})
+    local lastCloset,lastBreaker=-math.huge,-math.huge
+    local function bindBreaker(obj)
+        if obj.Name~="ElevatorBreaker" then return end
+        local code=path(obj,"SurfaceGui","Frame","Code")
+        if not code or not code:IsA("TextLabel") or breakerCodes[code] then return end
+        breakerCodes[code]=true
+        connect(code:GetPropertyChangedSignal("Text"),function()
+            if not alive or not enabled("DoorsAutoBreaker") or not focused or Library.Toggled or UIS:GetFocusedTextBox()
+                or os.clock()-lastBreaker<0.3 or not obj:IsDescendantOf(workspace) then return end
+            local part=obj:IsA("BasePart") and obj or obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart",true)
+            local r,h=root(),hum()
+            if not part or not r or not h or h.Health<=0 or (part.Position-r.Position).Magnitude>25 then return end
+            local remote=path(remotes(),"EBF")
+            if remote and remote:IsA("RemoteEvent") then lastBreaker=os.clock();remote:FireServer() end
+        end)
+    end
+    local function tryBindBreaker(obj)
+        bindBreaker(obj)
+        local parent=obj.Parent
+        for _=1,4 do if not parent or parent==workspace then break end bindBreaker(parent);parent=parent.Parent end
+    end
+    for _,obj in ipairs(workspace:GetDescendants()) do bindBreaker(obj) end
+    connect(workspace.DescendantAdded,tryBindBreaker)
+    local function lineOfSight(prompt,position,target)
+        if not prompt.RequiresLineOfSight then return true end
+        local r=root();if not r then return false end
+        local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={player.Character,highlights}
+        local origin=player.Character:FindFirstChild("Head") or r
+        local hit=workspace:Raycast(origin.Position,position-origin.Position,params)
+        return not hit or hit.Instance==target or (prompt.Parent:IsA("Model") and hit.Instance:IsDescendantOf(prompt.Parent))
+    end
+    local function requestHide(prompt)
+        if activePrompt or not prompt.Enabled then return end
+        local record={Prompt=prompt,Before=prompt.HoldDuration}
+        activePrompt=record;promptCooldown[prompt]=os.clock()+0.8
+        local ok=pcall(function()
+            prompt.HoldDuration=0
+            if type(fireproximityprompt)=="function" then fireproximityprompt(prompt)
+            else record.NeedsEnd=true;prompt:InputHoldBegin() end
+        end)
+        if not ok then finishPrompt() return end
+        task.delay(0.03,function() if activePrompt==record then finishPrompt() end end)
+    end
+    local function updateMoreAutomation()
+        local char,r,h=player.Character,root(),hum()
+        if not char or not r or not h or h.Health<=0 or not focused or Library.Toggled or UIS:GetFocusedTextBox() then return end
+        if enabled("DoorsClosetDelay") and char:GetAttribute("Hiding")==true and char:GetAttribute("AnimatingClient")~=true
+            and r.Anchored and h.MoveDirection.Magnitude>0.05 and os.clock()-lastExit>=0.8 then
+            local remote=path(remotes(),"CamLock")
+            if remote and remote:IsA("RemoteEvent") then lastExit=os.clock();remote:FireServer() end
+        end
+        if enabled("DoorsDoorReach") and char:GetAttribute("Hiding")~=true then
+            local best,bestDistance
+            for obj,entry in pairs(candidates) do
+                if entry.Category=="Exit" and obj:IsDescendantOf(workspace) and not obj:GetAttribute("Opened") and obj:GetAttribute("Locked")~=true then
+                    local leaves=doorLeaves(obj)
+                    local part=leaves[1]
+                    local remote=obj:FindFirstChild("ClientOpen")
+                    if part and remote and remote:IsA("RemoteEvent") then
+                        local distance=(r.Position-part.Position).Magnitude
+                        if distance<=val("DoorsDoorReachRange",15) and (not bestDistance or distance<bestDistance)
+                            and os.clock()>=(doorTimes[obj] or 0) then best=obj;bestDistance=distance end
+                    end
+                end
+            end
+            if best then doorTimes[best]=os.clock()+1;best:FindFirstChild("ClientOpen"):FireServer() end
+        end
+        if not enabled("DoorsAutoCloset") or char:GetAttribute("Hiding")==true or activePrompt or os.clock()-lastCloset<1.5 then return end
+        local threat=false
+        for obj,entry in pairs(candidates) do
+            if entry.Category=="Entity" and entityNames[obj.Name] and obj:IsDescendantOf(workspace)
+                and not val("DoorsAutoClosetIgnore",{})[entry.Label] then
+                local p=markerTarget(obj,"Entity")
+                if p and (p.Position-r.Position).Magnitude<=val("DoorsAutoClosetRange",150) then threat=true break end
+            end
+        end
+        if not threat then return end
+        local best,bestDistance
+        for obj,entry in pairs(candidates) do
+            if entry.Category=="Hide" and obj:IsDescendantOf(workspace) then
+                local hidden=obj:FindFirstChild("HiddenPlayer",true)
+                local prompt=obj:FindFirstChild("HidePrompt",true)
+                -- Missing occupancy metadata is treated as unknown, never assumed empty.
+                if hidden and hidden:IsA("ObjectValue") and hidden.Value==nil and prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                    local position,target=promptAnchor(prompt)
+                    if position then
+                        local distance=(position-r.Position).Magnitude
+                        if distance<=prompt.MaxActivationDistance and (not bestDistance or distance<bestDistance)
+                            and lineOfSight(prompt,position,target) then best=prompt;bestDistance=distance end
+                    end
+                end
+            end
+        end
+        if best then lastCloset=os.clock();requestHide(best) end
+    end
+
+    local elapsed=0
+    connect(RunService.Heartbeat,function(dt)
+        elapsed+=dt
+        if elapsed<0.2 then return end elapsed=0
+        updateNotices();updateVisualEffects();updateAudio();reconcileHazards();updatePrompts();updateAutomation();updateMoreAutomation()
+    end)
+    extension.Finalize=function()
+        for _,obj in ipairs(workspace:GetDescendants()) do watchObject(obj);watchPuzzle(obj);tryBindBreaker(obj) end
+        for _,obj in ipairs(RS:GetDescendants()) do watchObject(obj) end
+        if pg then for _,obj in ipairs(pg:GetDescendants()) do watchObject(obj) end end
+        for _,obj in ipairs(soundService:GetDescendants()) do watchObject(obj) end
+    end
+    -- Individual feature-off callbacks also restore at the next 0.2s adapter tick.
+    -- All pools are restored synchronously by the unload handlers, including pending holds.
+    onCleanup(function() table.clear(notices);table.clear(visualObjects);table.clear(audioObjects);table.clear(hazards) end)
+end
+installReferencePort()
+end
 
 local menu = Tabs.Settings:AddLeftGroupbox("Menu", "settings")
 menu:AddButton({Text = "Unload DOORS module", Func = function() Library:Unload() end})
@@ -1061,10 +1980,14 @@ if saveOk then
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
     SaveManager:SetIgnoreIndexes({"DoorsMenuKey"})
-    SaveManager:SetFolder("ClaudeHub/DOORS/configs")
+    SaveManager:SetFolder("ClaudeHub/DOORS/configs-v040")
     SaveManager:BuildConfigSection(Tabs.Settings)
     -- No auto-load: a saved config cannot silently enable gameplay aids.
 end
+for _, obj in ipairs(workspace:GetDescendants()) do register(obj, false) extraRegister(obj, false) end
+if extension.Finalize then extension.Finalize() end
+ready = true
+refresh()
 loadedLabel:SetText(("Loaded in: %.2fs"):format(os.clock() - STARTED))
 Library:Notify("DOORS " .. VERSION .. " ready. RightControl opens the menu. All feature toggles start OFF.", 6)
 return Library
