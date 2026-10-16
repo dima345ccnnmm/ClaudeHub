@@ -30,9 +30,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ]]
--- ClaudeHub / DOORS v0.4.2 -- initial client-assist module, not an anti-cheat bypass.
+-- ClaudeHub / DOORS v0.4.3 -- initial client-assist module, not an anti-cheat bypass.
 -- Lobby and all places in the DOORS universe are routed here by Loader.luau.
-local VERSION, STARTED = "v0.4.2", os.clock()
+local VERSION, STARTED = "v0.4.3", os.clock()
 assert(game.GameId == 2440500124, "Use Loader.luau: this module is only for DOORS")
 -- Direct execution has the same lobby routing as the universal loader.
 if game.PlaceId == 6516141723 then
@@ -130,7 +130,7 @@ Tabs.Home:UpdateWarningBox({Visible = true, IsNormal = true, LockSize = true,
         "= Door ESP targets only leaf parts, including double doors",
         "+ Entity selector: multi-list, show only one, select all/clear",
         "+ Fast Interact: inline rebindable Hold key (F by default)",
-        "= v0.4.2: lobby module routing + late Scriptable third-person camera",
+        "= v0.4.3: Abysall prompt port, room-scoped reach and TweenService notifications",
         "= Strict Dupe trigger filter; startup callbacks gated until UI is ready",
         "+ v0.4: Abysall-style Camera/Effects, Entities/Settings, ESP/Settings",
         "+ Configurable ESP colors, tracers, arrows and notification filters",
@@ -159,7 +159,6 @@ gameTab:AddLabel("Place ID: " .. game.PlaceId)
 gameTab:AddButton({Text = "Copy Server ID", Func = function() copy(game.JobId) end})
 gamesTab:AddLabel("DOORS | initial module")
 gamesTab:AddLabel("Universal | ClaudeHub v2.16.0")
-gamesTab:AddLabel("The loader selects by universe, not by floor name.", true)
 infoTab:AddLabel("Version: " .. VERSION)
 infoTab:AddLabel("Library: ObsidianUltra")
 infoTab:AddLabel("Fork: joustingmatch / ObsidianUltra", true)
@@ -178,10 +177,6 @@ infoTab:AddButton({Text = "Copy Debug Info", Func = function()
         "Floor: " .. tostring(dataValue("Floor") or "unknown")}, "\n"))
 end})
 local notes = Tabs.Home:AddRightGroupbox("Read First", "info")
-notes:AddLabel("Re-run the loader after a lobby / floor teleport. No auto-execute is installed.", true)
-notes:AddLabel("Markers depend on replicated objects and streaming. They cannot reveal unloaded rooms or guarantee safety.", true)
-notes:AddLabel("Latest room is the server's progress value, not necessarily your current room.", true)
-notes:AddLabel("RightControl opens the menu. Click the badge beside a toggle to rebind it.", true)
 
 -- Tabboxes follow the supplied Abysall screenshots, while Home/Session stay ClaudeHub-owned.
 local panels, extension = {}, {}
@@ -226,7 +221,6 @@ end
 onCleanup(function() setBright(false) end)
 local visuals = panels.Camera
 toggle(visuals, "DoorsBright", "Fullbright", setBright)
-visuals:AddLabel("Local lighting only; effects and scripted darkness can still affect the view.", true)
 
 local light
 local function removeLight() if light then light:Destroy() light = nil end end
@@ -279,7 +273,6 @@ end
 toggle(cameraBox, "DoorsFov", "Custom FOV", applyFov)
 cameraBox:AddSlider("DoorsFovValue", {Text = "Field of view", Default = 70, Min = 1, Max = 120,
     Rounding = 0, Callback = applyFov})
-cameraBox:AddLabel("Off by default. May conflict with scripted cutscene cameras.", true)
 connect(workspace:GetPropertyChangedSignal("CurrentCamera"), applyFov)
 onCleanup(restoreFov)
 
@@ -596,9 +589,7 @@ for _, entry in ipairs({{"Exit", "Exit doors"}, {"Item", "Objectives / keys / bo
 end
 markersBox:AddSlider("DoorsMarkerDistance", {Text = "Marker range (studs)", Default = 250, Min = 30,
     Max = 750, Rounding = 0})
-markersBox:AddLabel("Loaded objects only. Item/hiding names are an initial allowlist; some floors need additional adapters. Hiding spots may be occupied or unsafe.", true)
 local entityBox = panels.ESP
-entityBox:AddLabel("By FireBacon (bocaj111004) | adapted for ClaudeHub", true)
 toggle(entityBox, "DoorsMarkEntity", "Entity ESP", function(value)
     if not value then
         for obj, marker in pairs(markers) do if marker.Category == "Entity" then drop(obj) end end
@@ -607,7 +598,6 @@ end)
 entityBox:AddDropdown("DoorsDupeDetection", {Text = "Dupe detection", Values = {"Strict: touch trigger", "Compatible: Hidden hitbox"}, Default = 1, Callback = function()
     for _, candidate in ipairs(workspace:GetDescendants()) do register(candidate, false) end
 end})
-entityBox:AddLabel("Strict mode ignores name-only / decorative fake doors. Requires Hidden + a replicated touch trigger. If an older floor streams no trigger, Compatible mode uses Hidden only (less precise).", true)
 entityBox:AddDropdown("DoorsEntityList", {Text = "Entities to show (multiple)", Values = entityChoices,
     Default = entityChoices, Multi = true, AllowNull = true, Callback = function()
         -- Rebuild at the next refresh; release transparent-rusher patches now.
@@ -628,7 +618,6 @@ entityBox:AddButton({Text = "Rescan loaded entities", Func = function()
     for _, obj in ipairs(workspace:GetDescendants()) do register(obj, false) end
     Library:Notify("Rescanned loaded objects. Enable Entity markers and check the entity filter/range.", 5)
 end})
-entityBox:AddLabel("All known types are selected initially, but Entity markers is OFF. Names come from Abysall; Archives/Stairwell-specific entities are not yet verified.", true)
 local alertsBox = panels.Entities
 toggle(alertsBox, "DoorsAlerts", "Entity spawn notifications", function(value)
     if value then
@@ -637,7 +626,6 @@ toggle(alertsBox, "DoorsAlerts", "Entity spawn notifications", function(value)
         end
     end
 end)
-alertsBox:AddLabel("Spawn notifications use Abysall dynamic-entity names. Room hazards have ESP without flooding spawn notifications. Not every threat is detectable from replicated objects.", true)
 connect(workspace.DescendantAdded, function(obj)
     register(obj, true)
     extraRegister(obj, true)
@@ -801,7 +789,6 @@ local hudBox = Tabs.Assist:AddRightGroupbox("Session HUD", "layout-dashboard")
 toggle(hudBox, "DoorsHUD", "Show draggable HUD", function(value) hud.Visible = value end)
 hudBox:AddButton({Text = "Reset HUD position", Func = function() drag = nil hud.Position = UDim2.fromOffset(24, 110) end})
 hudBox:AddButton({Text = "Reset session timer", Func = function() STARTED = os.clock() end})
-hudBox:AddLabel("Mouse / touch dragging. Timer is time since loading/reset, not the run's official time.", true)
 local accumulator = 0
 local function refresh()
     local latest, floor = dataValue("LatestRoom"), dataValue("Floor")
@@ -876,7 +863,6 @@ toggle(movement, "DoorsCanJump", "Enable jumping", function(value) if not value 
 toggle(movement, "DoorsCanSlide", "Enable sliding", function(value) if not value then restore(slideOwned) end end)
 toggle(movement, "DoorsInfiniteJump", "Infinite jumps")
 toggle(movement, "DoorsNoAcceleration", "No acceleration", function(value) if not value then restore(physicsOwned) end end)
-movement:AddLabel("Client-side movement settings. The game/server may override or reject them; no anti-cheat bypass is installed. No Acceleration uses reversible physical properties, not repeated velocity writes.", true)
 local trackedCharacter
 connect(RunService.PreSimulation, function()
     local char, h, part = player.Character, hum(), root()
@@ -910,7 +896,6 @@ toggle(effects, "DoorsTransparentHiding", "Transparent occupied hiding spot", fu
     if not value then restore(hidingOwned) end
 end)
 effects:AddSlider("DoorsHidingAlpha", {Text = "Hiding-spot transparency", Default = 0.65, Min = 0, Max = 1, Rounding = 2})
-effects:AddLabel("Transparency applies only to your occupied spot (HiddenPlayer == your character), using local transparency. Other players' hiding spots are unchanged.", true)
 local atmospheres = setmetatable({}, {__mode = "k"})
 connect(workspace:GetPropertyChangedSignal("CurrentCamera"), function()
     local camera = workspace.CurrentCamera
@@ -978,31 +963,34 @@ local function applyHidingTransparency()
 end
 
 -- Fast Interact combines Abysall's InstantPrompts/AutoInteract patterns.
--- Default settings never change reach/line-of-sight or disabled prompts. Hold F
--- (rebind the inline badge) with the checkbox enabled and the menu closed.
+-- TriggerPrompt and camera-anchor fallback are adapted from Abysall (MIT).
 local interaction = Tabs.Main:AddLeftGroupbox("Self / Interaction", "hand")
 local prompts = setmetatable({}, {__mode = "k"})
 local promptCooldown = setmetatable({}, {__mode = "k"})
 local activePrompt
 local function finishPrompt()
-    local record = activePrompt
+    local record=activePrompt
     if not record then return end
-    activePrompt = nil
-    if record.NeedsEnd then pcall(function() record.Prompt:InputHoldEnd() end) end
-    pcall(function()
-        if record.Prompt.HoldDuration == 0 then record.Prompt.HoldDuration = record.Before end
-    end)
+    local prompt=record.Prompt
+    if record.NeedsEnd then pcall(function() prompt:InputHoldEnd() end) end
+    if record.Port then
+        pcall(function() prompt.Parent=record.OldParent end)
+        for field,value in pairs({MaxActivationDistance=record.OldDistance,Enabled=record.OldEnabled,
+            HoldDuration=record.Before,RequiresLineOfSight=record.OldLOS}) do pcall(function() prompt[field]=value end) end
+        if record.Temp then record.Temp:Destroy() end
+    else pcall(function() if prompt.HoldDuration==0 then prompt.HoldDuration=record.Before end end) end
+    if record.TriggeredConnection then record.TriggeredConnection:Disconnect() end
+    activePrompt=nil
+    if extension.ApplyPrompt and prompt.Parent then extension.ApplyPrompt(prompt) end
 end
-interaction:AddToggle("DoorsFastInteract", {Text = "Fast Interact (hold key)", Default = false,
+interaction:AddToggle("DoorsFastInteract", {Text = "Fast Interact", Default = false,
     Callback = function(value) if not value then finishPrompt() end end}):AddKeyPicker("DoorsFastInteractKey", {
     Default = "F", Text = "Fast Interact", Mode = "Hold", Modes = {"Hold", "Toggle"},
     SyncToggleState = false, NoUI = true,
 })
-interaction:AddSlider("DoorsInteractRange", {Text = "Search range (studs)", Default = 8, Min = 2, Max = 15, Rounding = 0})
 interaction:AddDropdown("DoorsInteractIgnore", {Text = "Ignore", Multi = true, AllowNull = true,
     Values = {"Hide / exit", "Locks / purchases", "Dropped items", "Currency", "Fake doors / hazards"},
     Default = {"Hide / exit", "Locks / purchases", "Dropped items", "Fake doors / hazards"}})
-interaction:AddLabel("Enable, close the menu, then hold F near a prompt. The badge can be rebound (including modifiers). Search range uses the current prompt activation distance (including explicit Self overrides). Shop/lock/hiding/hazard prompts are ignored by default. Server-required holds may still apply.", true)
 onCleanup(finishPrompt)
 local focused = true
 connect(UIS.WindowFocusReleased, function() focused = false finishPrompt() end)
@@ -1037,60 +1025,172 @@ local function ignoredPrompt(prompt, auto)
     return false
 end
 local function fastInteract()
-    local key = Options.DoorsFastInteractKey
-    local autoKey = Options.DoorsAutoInteractKey
-    local auto = enabled("DoorsAutoInteract") or (autoKey and autoKey:GetState())
-    local fast = enabled("DoorsFastInteract") and key:GetState()
-    if not alive or not focused or not (fast or auto)
-        or Library.Toggled or Library.IsPicking or UIS:GetFocusedTextBox() then finishPrompt() return end
-    if activePrompt then return end
-    local part, h = root(), hum()
-    if not part or not h or h.Health <= 0 then return end
-    local best, bestDistance
+    local key,autoKey=Options.DoorsFastInteractKey,Options.DoorsAutoInteractKey
+    local auto=enabled("DoorsAutoInteract") or (autoKey and autoKey:GetState())
+    local fast=enabled("DoorsFastInteract") or (key and key:GetState())
+    if not focused or not (fast or auto) or Library.Toggled or Library.IsPicking or UIS:GetFocusedTextBox() then
+        if extension.ClearPromptQueue then extension.ClearPromptQueue() else finishPrompt() end
+        return
+    end
+    local r,h=root(),hum()
+    if not r or not h or h.Health<=0 then return end
+    if extension.UpdatePrompts then extension.UpdatePrompts() end
     for prompt in pairs(prompts) do
-        if not prompt:IsDescendantOf(workspace) then prompts[prompt] = nil
-        elseif prompt.Enabled and not ignoredPrompt(prompt, auto) and (not auto or objectRoom(prompt) == nil
-            or tonumber(player:GetAttribute("CurrentRoom")) == nil
-            or objectRoom(prompt) == tonumber(player:GetAttribute("CurrentRoom"))) and os.clock() >= (promptCooldown[prompt] or 0) then
-            local position, target = promptAnchor(prompt)
-            if position then
-                local distance = (position - part.Position).Magnitude
-                if distance <= math.min(Options.DoorsInteractRange.Value, prompt.MaxActivationDistance)
-                    and (not bestDistance or distance < bestDistance) then
-                    local visible = true
-                    if prompt.RequiresLineOfSight then
-                        local params = RaycastParams.new()
-                        params.FilterType = Enum.RaycastFilterType.Exclude
-                        params.FilterDescendantsInstances = {player.Character, highlights}
-                        local head = player.Character:FindFirstChild("Head") or part
-                        local hit = workspace:Raycast(head.Position, position - head.Position, params)
-                        local owner = prompt.Parent
-                        if owner:IsA("Attachment") then owner = owner.Parent end
-                        if owner and owner:IsA("BasePart") and owner.Parent and owner.Parent:IsA("Model") then owner = owner.Parent end
-                        -- A drawer's front/handle may occlude its own prompt. Allow its
-                        -- immediate furniture model, never the entire room or a wall.
-                        local rooms = roomFolder()
-                        local furniture = owner and owner:IsA("Model") and (not rooms or owner.Parent ~= rooms)
-                        visible = not hit or hit.Instance == target
-                            or (furniture and hit.Instance:IsDescendantOf(owner))
-                    end
-                    if visible then best, bestDistance = prompt, distance end
-                end
+        if not prompt:IsDescendantOf(workspace) then prompts[prompt]=nil continue end
+        if activePrompt and activePrompt.Prompt==prompt then continue end
+        if extension.PromptSameRoom and not extension.PromptSameRoom(prompt) then continue end
+        local position=promptAnchor(prompt)
+        if not position or (position-r.Position).Magnitude>prompt.MaxActivationDistance or not prompt.Enabled then continue end
+        if auto and extension.TriggerAutoPrompt then extension.TriggerAutoPrompt(prompt)
+        elseif fast and not ignoredPrompt(prompt,false) and extension.RequestPrompt then extension.RequestPrompt(prompt) end
+    end
+end
+
+local function installPromptBackend()
+    local PPS=game:GetService("ProximityPromptService")
+    local baseline=setmetatable({}, {__mode="k"})
+    local queued=setmetatable({}, {__mode="k"})
+    local queue={}
+    local function sameRoom(prompt)
+        local owner=objectRoom(prompt)
+        local current=tonumber(player:GetAttribute("CurrentRoom"))
+        return owner==nil or current==nil or owner==current
+    end
+    extension.PromptSameRoom=sameRoom
+    local function capture(prompt)
+        if baseline[prompt] then return baseline[prompt] end
+        local record={HoldDuration=prompt.HoldDuration,RequiresLineOfSight=prompt.RequiresLineOfSight,
+            MaxActivationDistance=prompt.MaxActivationDistance,Enabled=prompt.Enabled,Applied={}}
+        baseline[prompt]=record
+        return record
+    end
+    local function assign(prompt,record,field,value)
+        local applied=record.Applied[field]
+        if applied~=nil and prompt[field]~=applied then record[field]=prompt[field] end
+        if applied==nil then record[field]=prompt[field] end
+        if prompt[field]~=value then prompt[field]=value end
+        record.Applied[field]=value
+    end
+    local function release(prompt,record,field)
+        local applied=record.Applied[field]
+        if applied~=nil and prompt[field]==applied then prompt[field]=record[field] end
+        record.Applied[field]=nil
+    end
+    extension.ApplyPrompt=function(prompt)
+        if not prompt:IsA("ProximityPrompt") or prompt:GetAttribute("FakePrompt") then return end
+        if activePrompt and activePrompt.Prompt==prompt then return end
+        local record=capture(prompt)
+        local multiplier=Options.DoorsPromptReach and Options.DoorsPromptReach.Value or 1
+        if not sameRoom(prompt) then
+            for _,field in ipairs({"HoldDuration","RequiresLineOfSight","MaxActivationDistance"}) do release(prompt,record,field) end
+            if multiplier>1 then assign(prompt,record,"Enabled",false) else release(prompt,record,"Enabled") end
+            return
+        end
+        release(prompt,record,"Enabled")
+        if enabled("DoorsInstantPrompts") then assign(prompt,record,"HoldDuration",0) else release(prompt,record,"HoldDuration") end
+        if enabled("DoorsPromptClip") then assign(prompt,record,"RequiresLineOfSight",false) else release(prompt,record,"RequiresLineOfSight") end
+        if multiplier~=1 then
+            local last=record.Applied.MaxActivationDistance
+            if last~=nil and prompt.MaxActivationDistance~=last then record.MaxActivationDistance=prompt.MaxActivationDistance end
+            if last==nil then record.MaxActivationDistance=prompt.MaxActivationDistance end
+            local desired=record.MaxActivationDistance*multiplier
+            assign(prompt,record,"MaxActivationDistance",desired)
+        else release(prompt,record,"MaxActivationDistance") end
+    end
+    extension.UpdatePrompts=function()
+        for prompt in pairs(prompts) do
+            if prompt:IsDescendantOf(workspace) then extension.ApplyPrompt(prompt)
+            else
+                local record=baseline[prompt]
+                if record then for field in pairs(record.Applied) do release(prompt,record,field) end end
+                prompts[prompt]=nil;baseline[prompt]=nil
             end
         end
     end
-    if not best then return end
-    local record = {Prompt = best, Before = best.HoldDuration}
-    activePrompt = record
-    promptCooldown[best] = os.clock() + 0.8
-    local ok = pcall(function()
-        best.HoldDuration = 0
-        if type(fireproximityprompt) == "function" then fireproximityprompt(best)
-        else record.NeedsEnd = true best:InputHoldBegin() end
+    local function clearQueue()
+        table.clear(queue);table.clear(queued)
+        finishPrompt()
+    end
+    extension.ClearPromptQueue=clearQueue
+    extension.RequestPrompt=function(prompt)
+        if not prompt or not prompt.Parent or not prompt:IsA("ProximityPrompt") or queued[prompt] then return false end
+        if activePrompt and activePrompt.Prompt==prompt then return false end
+        if os.clock()<(promptCooldown[prompt] or 0) then return false end
+        if not prompt.Enabled or not sameRoom(prompt) then return false end
+        promptCooldown[prompt]=os.clock()+0.2
+        if type(fireproximityprompt)=="function" then
+            local before=prompt.HoldDuration
+            prompt.HoldDuration=0
+            local ok=pcall(fireproximityprompt,prompt)
+            if prompt.Parent and prompt.HoldDuration==0 then prompt.HoldDuration=before end
+            if ok then return true end
+        end
+        queued[prompt]=true;table.insert(queue,prompt)
+        return true
+    end
+    local function activeInput()
+        local autoKey,fastKey=Options.DoorsAutoInteractKey,Options.DoorsFastInteractKey
+        return focused and not Library.Toggled and not Library.IsPicking and not UIS:GetFocusedTextBox()
+            and (enabled("DoorsAutoInteract") or autoKey and autoKey:GetState()
+                or enabled("DoorsFastInteract") or fastKey and fastKey:GetState())
+    end
+    connect(PPS.PromptShown,function(prompt)
+        if activePrompt and activePrompt.Prompt==prompt then activePrompt.Shown=true end
     end)
-    if not ok then finishPrompt() return end
-    task.delay(0.03, function() if activePrompt == record then finishPrompt() end end)
+    connect(PPS.PromptTriggered,function(prompt)
+        promptCooldown[prompt]=os.clock()+0.35
+        if activePrompt and activePrompt.Prompt==prompt then activePrompt.Fired=true end
+    end)
+    local function startNext()
+        while #queue>0 do
+            local prompt=table.remove(queue,1);queued[prompt]=nil
+            if not prompt.Parent or not prompt:IsDescendantOf(workspace) or not prompt.Enabled or not sameRoom(prompt) then continue end
+            local position=promptAnchor(prompt);local r=root();local camera=workspace.CurrentCamera
+            if not position or not r or not camera or (position-r.Position).Magnitude>prompt.MaxActivationDistance then continue end
+            local record={Prompt=prompt,Before=prompt.HoldDuration,OldParent=prompt.Parent,
+                OldDistance=prompt.MaxActivationDistance,OldEnabled=prompt.Enabled,OldLOS=prompt.RequiresLineOfSight,
+                Started=os.clock(),Attempted=0,Shown=false,Fired=false,Port=true}
+            activePrompt=record
+            record.TriggeredConnection=prompt.Triggered:Connect(function() record.Fired=true end)
+            local ok=pcall(function()
+                local temp=Instance.new("Part")
+                record.Temp=temp;temp.Name="ClaudeHubPromptAnchor"
+                temp.CanCollide=false;temp.CanQuery=false;temp.CanTouch=false;temp.Anchored=true;temp.Transparency=1
+                temp.Size=Vector3.new(0.001,0.001,0.001)
+                temp.CFrame=camera.CFrame*CFrame.new(0,0,-0.1);temp.Parent=workspace
+                prompt.MaxActivationDistance=99999;prompt.Enabled=true;prompt.HoldDuration=0;prompt.RequiresLineOfSight=false
+                prompt.Parent=temp
+            end)
+            if not ok then finishPrompt() else return end
+        end
+    end
+    connect(RunService.Heartbeat,function()
+        if not activeInput() or not hum() or hum().Health<=0 then clearQueue() return end
+        if not activePrompt then startNext() end
+        local record=activePrompt
+        if not record or not record.Port then return end
+        local prompt=record.Prompt;local camera=workspace.CurrentCamera
+        if not record.OldParent.Parent or not prompt.Parent or not camera or record.Fired or os.clock()-record.Started>1.5 then
+            finishPrompt();return
+        end
+        if record.Temp then record.Temp.CFrame=camera.CFrame*CFrame.new(0,0,-0.1) end
+        if (record.Shown or os.clock()-record.Started>=0.1) and os.clock()-record.Attempted>=0.05 then
+            record.Attempted=os.clock()
+            local ok=pcall(function() record.NeedsEnd=true;prompt:InputHoldBegin();prompt:InputHoldEnd();record.NeedsEnd=false end)
+            if not ok then finishPrompt() end
+        end
+    end)
+    connect(player:GetAttributeChangedSignal("CurrentRoom"),function() clearQueue();extension.UpdatePrompts() end)
+    connect(UIS.WindowFocusReleased,clearQueue)
+    onCleanup(function()
+        clearQueue()
+        for prompt,record in pairs(baseline) do
+            for field in pairs(record.Applied) do pcall(release,prompt,record,field) end
+        end
+        table.clear(baseline)
+    end)
 end
+installPromptBackend()
 
 connect(player:GetAttributeChangedSignal("CurrentRoom"), function() finishPrompt(); renderMarkers() end)
 
@@ -1102,10 +1202,9 @@ local oxygenLabel = extraAlerts:AddLabel("Oxygen: disabled")
 toggle(extraAlerts, "DoorsHasteAlert", "Haste timer + warning")
 extraAlerts:AddSlider("DoorsHasteThreshold", {Text = "Haste warning (seconds)", Default = 20, Min = 5, Max = 60, Rounding = 0})
 local hasteLabel = extraAlerts:AddLabel("Haste timer: disabled")
-extraAlerts:AddLabel("Reads Character.Oxygen and FloorReplicated.DigitalTimer when available. Missing values are shown as unavailable; no data is invented.", true)
 local itemSeen = setmetatable({}, {__mode = "k"})
 extraRegister = function(obj, allowAlert)
-    if obj:IsA("ProximityPrompt") then prompts[obj] = true end
+    if obj:IsA("ProximityPrompt") then prompts[obj] = true if extension.ApplyPrompt then extension.ApplyPrompt(obj) end end
     if obj:IsA("Atmosphere") then atmospheres[obj] = true end
     local category, label = classify(obj)
     if category == "Loot" and not itemSeen[obj] then
@@ -1154,7 +1253,7 @@ end
 local fastElapsed, extrasElapsed = 0, 0
 connect(RunService.Heartbeat, function(dt)
     fastElapsed += dt extrasElapsed += dt
-    if fastElapsed >= 0.1 then fastElapsed = 0 fastInteract() end
+    if fastElapsed >= 1/60 then fastElapsed = 0 fastInteract() end
     if extrasElapsed < 0.5 then return end
     extrasElapsed = 0
     applyPhysicalProperties() applyFog() applyHidingTransparency() updateExtraAlerts()
@@ -1195,7 +1294,6 @@ local function installReferencePort()
     end
     local esp = panels.ESPSettings
     dropdown(esp,"DoorsESPRoomScope","Room visibility",{"Current room","All loaded rooms"})
-    esp:AddLabel("Room objects follow your CurrentRoom; global entities stay visible. If CurrentRoom is unavailable, loaded objects remain visible.",true)
     toggle(esp,"DoorsESPRainbow","Rainbow effect")
     esp:AddToggle("DoorsESPDistance",{Text="Show distance",Default=true})
     slider(esp,"DoorsESPFill","Fill transparency",0.75,0,1,2)
@@ -1211,7 +1309,6 @@ local function installReferencePort()
     toggle(esp,"DoorsESPTracers","Enable tracers")
     slider(esp,"DoorsArrowRadius","Arrow radius",250,40,500)
     toggle(esp,"DoorsESPArrows","Enable arrows")
-    esp:AddLabel("Up to 240 labels/tracers; 24 active Highlight instances. Arrows mark off-screen targets. Only replicated objects can be rendered.",true)
     extension.StyleMarker = function(marker,row)
         if not marker.Born then marker.Born=os.clock() end
         local color = enabled("DoorsESPRainbow") and Color3.fromHSV((os.clock()*0.12)%1,0.85,1)
@@ -1298,7 +1395,6 @@ local function installReferencePort()
     slider(notifyPanel,"DoorsNotifyVolume","Sound volume",3,0,10,1)
     toggle(notifyPanel,"DoorsNotifySound","Play sound")
     toggle(notifyPanel,"DoorsNotifyKeep","Keep entity notifications")
-    notifyPanel:AddLabel("Style names are local ClaudeHub recreations, not external notification loaders. Chat is public and OFF by default. Drag the notification header to move the stack.",true)
     local noticeRoot=Instance.new("Frame")
     noticeRoot.Name="ClaudeHubNoticeStack";noticeRoot.BackgroundTransparency=1
     noticeRoot.Size=UDim2.fromOffset(420,36);noticeRoot.Position=UDim2.fromOffset(24,210);noticeRoot.Parent=gui
@@ -1308,6 +1404,16 @@ local function installReferencePort()
     handle.TextColor3=Color3.fromRGB(185,160,240);handle.Font=Enum.Font.Code;handle.TextSize=12
     handle.Active=true;handle.Visible=false;handle.Parent=noticeRoot
     local notices,noticeDrag,noticeOrigin,noticePosition={},nil,nil,nil
+    local TweenService=game:GetService("TweenService")
+    local function tween(n,field,obj,seconds,style,goal)
+        if n[field] then n[field]:Cancel() end
+        n[field]=TweenService:Create(obj,TweenInfo.new(seconds,style,Enum.EasingDirection.Out),goal)
+        n[field]:Play()
+    end
+    local function removeNotice(n)
+        for _,field in ipairs({"MotionTween","ProgressTween"}) do if n[field] then n[field]:Cancel() end end
+        n.Frame:Destroy()
+    end
     connect(handle.InputBegan,function(input)
         if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
             noticeDrag=input;noticeOrigin=input.Position;noticePosition=noticeRoot.AbsolutePosition
@@ -1332,19 +1438,27 @@ local function installReferencePort()
     local function updateNotices()
         for i=#notices,1,-1 do
             local n=notices[i]
-            local keep=enabled("DoorsNotifyKeep") and n.Object and n.Object:IsDescendantOf(workspace)
+            local keep=enabled("DoorsNotifyKeep") and n.Object and n.Object:IsDescendantOf(workspace) or false
             if os.clock()>=n.Expires and not keep then
-                n.Frame:Destroy();table.remove(notices,i)
-            elseif n.Progress then
-                n.Progress.Size=UDim2.new(keep and 1 or math.clamp((n.Expires-os.clock())/6,0,1),0,0,3)
+                removeNotice(n);table.remove(notices,i)
+            elseif n.Kept~=keep then
+                n.Kept=keep
+                if keep then
+                    if n.ProgressTween then n.ProgressTween:Cancel() end
+                    n.Progress.Size=UDim2.new(1,0,0,3)
+                else
+                    tween(n,"ProgressTween",n.Progress,math.max(0.05,n.Expires-os.clock()),Enum.EasingStyle.Linear,{Size=UDim2.new(0,0,0,3)})
+                end
             end
         end
         handle.Visible=#notices>0
         local y=28
         for _,n in ipairs(notices) do
-            -- Local slide-in, no external notification script or permanent tween worker.
-            local remaining=1-math.clamp((os.clock()-n.Created)/0.25,0,1)
-            n.Frame.Position=UDim2.fromOffset(math.floor(40*remaining*remaining),y)
+            if n.TargetY~=y then
+                if n.TargetY==nil then n.Frame.Position=UDim2.fromOffset(420,y) end
+                n.TargetY=y
+                tween(n,"MotionTween",n.Frame,0.35,Enum.EasingStyle.Exponential,{Position=UDim2.fromOffset(0,y)})
+            end
             y+=n.Height+10
         end
     end
@@ -1353,8 +1467,8 @@ local function installReferencePort()
         local style=val("DoorsNotifyStyle","Abysall")
         if style=="Library" then Library:Notify(title..(body~="" and ("\n"..body) or ""),6)
         else
-            if #notices>=6 then notices[1].Frame:Destroy();table.remove(notices,1) end
-            local width,height=420,60
+            if #notices>=6 then removeNotice(notices[1]);table.remove(notices,1) end
+            local width,height=420,50
             if style=="STX" then width,height=240,90 elseif style=="Doors" then width,height=370,96 end
             local accent=obj and Color3.fromRGB(255,90,90) or Color3.fromRGB(133,80,255)
             if style=="Doors" then accent=obj and Color3.fromRGB(255,110,80) or Color3.fromRGB(255,213,130) end
@@ -1362,7 +1476,7 @@ local function installReferencePort()
             frame.Name="Notice";frame.Size=UDim2.fromOffset(width,height);frame.BorderSizePixel=0
             frame.BackgroundColor3=style=="Doors" and Color3.fromRGB(32,25,20)
                 or (style=="STX" and Color3.fromRGB(40,40,40) or Color3.fromRGB(19,17,29))
-            frame.BackgroundTransparency=style=="Abysall" and 0.15 or 0
+            frame.BackgroundTransparency=style=="Abysall" and 0.4 or 0
             frame.Parent=noticeRoot
             Instance.new("UICorner",frame).CornerRadius=UDim.new(0,4)
             local function text(name,value,x,y,w,h,size,font)
@@ -1380,7 +1494,7 @@ local function installReferencePort()
                 text("Description",body,8,34,width-16,46,12,Enum.Font.Gotham)
             else
                 local icon=Instance.new("ImageLabel")
-                icon.Name="WarningIcon";icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(10,10)
+                icon.Name="WarningIcon";icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(10,5)
                 icon.Size=UDim2.fromOffset(40,40);icon.Image="rbxassetid://3944668821";icon.ImageColor3=accent;icon.Parent=frame
                 if style=="Doors" then
                     local border=Instance.new("UIStroke",frame);border.Color=accent;border.Thickness=1
@@ -1388,8 +1502,8 @@ local function installReferencePort()
                     text("Title",title,60,25,width-86,25,16,Enum.Font.Highway)
                     text("Description",body,60,53,width-76,35,12,Enum.Font.Highway)
                 else
-                    text("Title",title,60,8,width-90,18,13)
-                    text("Description",body,60,28,width-76,25,12)
+                    text("Title",title,60,7,width-90,15,10)
+                    text("Description",body,60,24,width-76,18,10)
                 end
             end
             local progress=Instance.new("Frame",frame)
@@ -1399,7 +1513,7 @@ local function installReferencePort()
             close.Name="Close";close.Size=UDim2.fromOffset(22,20);close.Position=UDim2.fromOffset(width-24,0)
             close.Text="x";close.BackgroundTransparency=1;close.TextColor3=Color3.fromRGB(240,235,250);close.Parent=frame
             close.Activated:Connect(function()
-                for i,n in ipairs(notices) do if n.Frame==frame then frame:Destroy();table.remove(notices,i) break end end
+                for i,n in ipairs(notices) do if n.Frame==frame then removeNotice(n);table.remove(notices,i) break end end
                 updateNotices()
             end)
             table.insert(notices,{Frame=frame,Expires=os.clock()+6,Created=os.clock(),Object=obj,Height=height,Progress=progress});updateNotices()
@@ -1448,7 +1562,7 @@ local function installReferencePort()
     end
     notifyPanel:AddButton({Text="Test Notification",Func=function() extension.Notify("Test notification","ClaudeHub DOORS "..VERSION) end})
     notifyPanel:AddButton({Text="Clear notifications",Func=function()
-        for _,n in ipairs(notices) do n.Frame:Destroy() end table.clear(notices);handle.Visible=false
+        for _,n in ipairs(notices) do removeNotice(n) end table.clear(notices);handle.Visible=false
     end})
     notifyPanel:AddButton({Text="Reset notification position",Func=function() noticeDrag=nil;noticeRoot.Position=UDim2.fromOffset(24,210) end})
 
@@ -1494,7 +1608,6 @@ local function installReferencePort()
     slider(panels.Camera,"DoorsViewX","Viewmodel X",0,-10,10,1)
     slider(panels.Camera,"DoorsViewY","Viewmodel Y",0,-10,10,1)
     slider(panels.Camera,"DoorsViewZ","Viewmodel Z",0,-10,10,1)
-    panels.Camera:AddLabel("Shake/bobbing/viewmodel need a compatible Main_Game table. Third person supports normal DOORS Scriptable cameras; hiding/animation states and spectating suspend it. FOV is independently opt-in.",true)
     local lastAppliedCamera,lastBase,lastResult
     local function undoOffset()
         if lastAppliedCamera and lastAppliedCamera.Parent and lastResult and lastAppliedCamera.CFrame==lastResult then
@@ -1581,7 +1694,6 @@ local function installReferencePort()
         {"DoorsNoHideVignette","Disable Hide vignette"}, {"DoorsNoFiredamp","Disable firedamp effect"},
         {"DoorsNoEntityScares","Disable entity jumpscares","Jumpscares"}}
     for _,entry in ipairs(effectEntries) do toggle(panels.Effects,entry[1],entry[2]) end
-    panels.Effects:AddLabel("Local visuals only, NOT damage protection. Renaming a module cannot stop a function already cached by the game. Firedamp protection does not add oxygen.",true)
     local cutscenes={Figure=true,FigureEnd=true,FigureHotelEnd=true,FigureHotelFire=true,SeekIntroFools=true,
         SeekIntroHotel=true,SeekIntroMines=true,SeekIntroMines2=true,SerewSeekDrain=true,SewerSeekLower=true,GrumbleNestEnd=true,EyestalkIntro=true}
     local removeNames={Screech="DoorsRemoveScreech",Shade="DoorsRemoveHalt",A90="DoorsRemoveA90",Dread="DoorsRemoveDread",Surge="DoorsRemoveSurge"}
@@ -1594,14 +1706,11 @@ local function installReferencePort()
         local id="DoorsBypass"..entry[1];hazardToggles[id]=true
         toggle(bypass,id,"Bypass "..entry[1].." (local)")
     end
-    bypass:AddLabel("These change only replicated local hitboxes/prompts. Server-validated damage may still apply. Jeff is not killed and entities are not destroyed.",true)
     local removed=Tabs.Exploits:AddRightGroupbox("Remove | module lookup","ghost")
     for _,entry in ipairs({{"Screech","Screech"},{"Halt","Halt"},{"A90","A-90"},{"Dread","Dread"},{"Surge","Surge"}}) do
         toggle(removed,"DoorsRemove"..entry[1],"Remove "..entry[2].." (future lookups)")
     end
-    removed:AddLabel("Stops future name-based client module lookups only. Already-running/cached modules and server damage are not disabled.",true)
     local unsupported=Tabs.Exploits:AddRightGroupbox("Compatibility / not ported","info")
-    unsupported:AddLabel("Not included: Anticheat Bypass, Velocity Manipulation, Position/Crouch Spoof, Infinite Items, No Damage hooks, Eyes/Lookman remote spoof, Auto Heartbeat and random-code guessing. These old hooks depend on executor and game internals; no fake working toggles are shown.",true)
     local adapterStatus=unsupported:AddLabel("Local adapters: waiting")
     local audioBox=Tabs.Exploits:AddLeftGroupbox("Audio","volume-2")
     toggle(audioBox,"DoorsMuteSteps","Remove footstep sounds")
@@ -1731,7 +1840,6 @@ local function installReferencePort()
     toggle(movement,"DoorsFly","Fly",function(v) if not v then stopFly() end end);badge("DoorsFly","G")
     slider(movement,"DoorsFlySpeed","Fly speed",20,1,80)
     toggle(movement,"DoorsNoclip","Noclip",function(v) if not v then restore(noclipOwned) end end);badge("DoorsNoclip","N")
-    movement:AddLabel("Fly: WASD + Space/Ctrl, camera-relative; menu/text input pauses movement. Fly uses G; Fast Interact uses F, so their default binds do not conflict. Server correction can still occur.",true)
     local function flyStep()
         local char,h,r=player.Character,hum(),root()
         if enabled("DoorsNoclip") and char and h and h.Health>0 then
@@ -1765,92 +1873,141 @@ local function installReferencePort()
     onCleanup(function() stopFly();restore(noclipOwned) end)
 
     -- Self: independent, reversible prompt overrides. Default multiplier is exactly 1.
-    local promptOwned={}
-    slider(interaction,"DoorsPromptReach","Prompt reach multiplier",1,1,3,1)
-    toggle(interaction,"DoorsInstantPrompts","Instant prompts")
-    toggle(interaction,"DoorsPromptClip","Prompt clip")
-    interaction:AddLabel("Reach/clip are optional local prompt overrides. Server validation may reject them. Fast Interact still respects Enabled, its ignore list, and the currently configured range.",true)
-    local function updatePrompts()
-        for prompt in pairs(prompts) do
-            if not prompt:IsDescendantOf(workspace) then restore(promptOwned,prompt);prompts[prompt]=nil continue end
-            if not activePrompt or activePrompt.Prompt~=prompt then
-                if enabled("DoorsInstantPrompts") then override(promptOwned,prompt,"HoldDuration",0)
-                else activeField(promptOwned,prompt,"HoldDuration") end
-            end
-            if enabled("DoorsPromptClip") then override(promptOwned,prompt,"RequiresLineOfSight",false)
-            else activeField(promptOwned,prompt,"RequiresLineOfSight") end
-            local multiplier=val("DoorsPromptReach",1)
-            if multiplier>1 then
-                local entry=promptOwned[prompt] and promptOwned[prompt].MaxActivationDistance
-                local base=entry and prompt.MaxActivationDistance==entry.Applied and entry.Before or prompt.MaxActivationDistance
-                override(promptOwned,prompt,"MaxActivationDistance",base*multiplier)
-            else activeField(promptOwned,prompt,"MaxActivationDistance") end
-        end
-    end
-    onCleanup(function() finishPrompt();restore(promptOwned) end)
+    interaction:AddSlider("DoorsPromptReach",{Text="Prompt reach multiplier",Default=1,Min=1,Max=2,Rounding=1,
+        Callback=function() if extension.UpdatePrompts then extension.UpdatePrompts() end end})
+    toggle(interaction,"DoorsInstantPrompts","Instant prompts",function() if extension.UpdatePrompts then extension.UpdatePrompts() end end)
+    toggle(interaction,"DoorsPromptClip","Prompt clip",function() if extension.UpdatePrompts then extension.UpdatePrompts() end end)
+    local function updatePrompts() if extension.UpdatePrompts then extension.UpdatePrompts() end end
     local automation=Tabs.Main:AddRightGroupbox("Automation","wand-sparkles")
     automation:AddToggle("DoorsAutoInteract",{Text="Auto Interact",Default=false,Callback=function(v) if not v then finishPrompt() end end})
         :AddKeyPicker("DoorsAutoInteractKey",{Default="R",Text="Auto interact",Mode="Hold",Modes={"Hold","Toggle"},SyncToggleState=false,NoUI=true})
     automation:AddDropdown("DoorsAutoInteractIgnore",{Text="Ignore List",Multi=true,AllowNull=true,
         Values={"Glitch Fragments","Jeff Items","Dropped Items","Currency","Minecarts","Locks"},
         Default={"Glitch Fragments","Jeff Items","Dropped Items"}})
-    automation:AddLabel("Toggle for continuous interaction, or hold R temporarily. Inline badge is rebindable. Only enabled prompts in your room and activation range; no prompt teleporting. Fast Interact keeps its separate safety filters.",true)
     do
-        local blacklist={HidePrompt=true,ExitPrompt=true,RiftPrompt=true,StarRiftPrompt=true,InteractPrompt=true,
-            ClimbPrompt=true,DonatePrompt=true,DialoguePrompt=true,RevivePrompt=true,EnterPrompt=true,
-            AnimatePrompt=true,ToolEventPrompt=true,Prompt=true,PropPrompt=true}
-        local locks={UnlockPrompt=true,SkullPrompt=true,LockPrompt=true,ThingToEnable=true,FusesPrompt=true}
-        local keys={"Key","GeneratorFuse","KeyBackdoor","KeyElectrical","KeyIron","Lockpick","SkeletonKey","Shears","Multitool"}
-        local function hasItem(name)
-            for _,container in ipairs({player.Character,player:FindFirstChild("Backpack")}) do
-                if container then
-                    local item=container:FindFirstChild(name)
-                    if item and item:IsA("Tool") then return item end
-                end
-            end
+        -- TriggerPrompt below is copied from the user-supplied Abysall Main.luau (MIT),
+        -- with local dependency names and guarded optional UI paths adapted.
+        local function hasItem(name,onlyCharacter)
+            local char=player.Character
+            local item=char and char:FindFirstChild(name)
+            if item then return item end
+            if onlyCharacter then return end
+            local pack=player:FindFirstChild("Backpack")
+            return pack and pack:FindFirstChild(name)
         end
-        extension.IgnoreAutoPrompt=function(prompt)
-            if blacklist[prompt.Name] or prompt:GetAttribute("AutoInteractIgnore") then return true end
-            local selection=val("DoorsAutoInteractIgnore",{})
-            local owner=prompt.Parent
-            if not owner then return true end
-            local lock=locks[prompt.Name] or owner:GetAttribute("Locked")==true
-            local lockAncestor=owner.Parent
-            while lockAncestor and lockAncestor~=workspace do
-                if lockAncestor:GetAttribute("Locked")==true then lock=true end
-                lockAncestor=lockAncestor.Parent
-            end
-            if owner.Parent and owner.Parent.Name=="Locker_Small_Locked" and prompt.Name=="ActivateEventPrompt" then lock=true end
-            if lock then
-                if selection.Locks then return true end
-                local hasKey=false
-                for _,name in ipairs(keys) do if hasItem(name) then hasKey=true break end end
-                if not hasKey then return true end
-            end
-            if selection.Minecarts and prompt.Name=="PushPrompt" then return true end
-            local node=owner
-            while node and node~=workspace do
-                local name=node.Name
-                if name=="FakeDoor" or name=="DoorFake" or name=="KeyObtainFake" or name=="TithingPlate" then return true end
-                if selection["Glitch Fragments"] and name=="GlitchCube" then return true end
-                if selection["Dropped Items"] and name=="Drops" then return true end
-                if selection["Jeff Items"] and (node:GetAttribute("JeffShop") or name=="JeffShop") then return true end
-                if selection.Currency and (name=="GoldPile" or name=="StardustPickup") then return true end
-                if name=="TrackLever" then return true end
-                if prompt.Name=="ActivateEventPrompt" and (name=="ElevatorBreaker" or name=="IndustrialGate" or name=="Padlock" or name=="MinesAnchor") then return true end
-                if name=="LeverForGate" and prompt:GetAttribute("Interactions")~=nil then return true end
-                if name=="KeyObtain" and (hasItem("Key") or hasItem("KeyBackdoor")) then return true end
-                if name=="ElectricalKeyObtain" and hasItem("KeyElectrical") then return true end
-                if name=="Bandage" and hum() and hum().Health>=hum().MaxHealth and not hasItem("BandagePack") then return true end
-                if (name=="LibraryHintPaper" or name=="PickupItem") and (hasItem("LibraryHintPaper") or hasItem("LibraryHintPaperHard")) then return true end
-                if name=="AlarmClock" and hasItem("AlarmClock") then return true end
-                node=node.Parent
-            end
-            if prompt.Name=="ActivateEventPrompt" and prompt.ActionText=="Close" then return true end
-            if (owner.Name=="CuttableVines" or owner.Name=="Chest_Vine" or owner.Name=="Cellar") and not hasItem("Shears") and not hasItem("Multitool") then return true end
-            if owner.Name=="SkullLock" and not hasItem("SkeletonKey") then return true end
-            return false
-        end
+local AutoInteractBlacklist = {
+	HidePrompt=true, RiftPrompt=true, StarRiftPrompt=true, InteractPrompt=true, ClimbPrompt=true,
+	DonatePrompt=true, DialoguePrompt=true, RevivePrompt=true, EnterPrompt=true, AnimatePrompt=true,
+	ToolEventPrompt=true, Prompt=true, PropPrompt=true
+}
+
+local TriggerDebounce = false
+
+extension.TriggerAutoPrompt = function(Prompt)
+    local Humanoid,Character=hum(),player.Character
+    if not Humanoid or not Character or not Prompt or not Prompt.Parent then return end
+    local Drops=workspace:FindFirstChild("Drops")
+    local selection=Options.DoorsAutoInteractIgnore.Value
+    local node=Prompt.Parent
+    while node and node~=workspace do
+        local name=node.Name
+        if name=="FakeDoor" or name=="DoorFake" or name=="KeyObtainFake" or name=="TithingPlate" then return end
+        if selection["Glitch Fragments"] and name=="GlitchCube" then return end
+        if selection["Jeff Items"] and (name=="JeffShop" or node:GetAttribute("JeffShop")) then return end
+        if selection.Currency and (name=="GoldPile" or name=="StardustPickup") then return end
+        if selection.Locks and node:GetAttribute("Locked")==true then return end
+        node=node.Parent
+    end
+    if Prompt.Name=="ExitPrompt" then return end
+	if AutoInteractBlacklist[Prompt.Name] then return end
+	if not Prompt or not Prompt.Parent then return end
+	if TriggerDebounce then return end
+
+	local ParentItem = hasItem(Prompt.Parent.Name)
+	if ParentItem and ParentItem:GetAttribute("Durability") and ParentItem:GetAttribute("DurabilityMax")
+		and ParentItem:GetAttribute("Durability") >= ParentItem:GetAttribute("DurabilityMax")
+	then return end
+
+	local LockPromptNames = { UnlockPrompt=true, SkullPrompt=true, LockPrompt=true, ThingToEnable=true, FusesPrompt=true }
+	local IsLockPrompt = LockPromptNames[Prompt.Name]
+		or (Prompt.Parent and Prompt.Parent:GetAttribute("Locked") == true)
+		or (Prompt.Parent and Prompt.Parent.Parent and Prompt.Parent.Parent.Name == "Locker_Small_Locked" and Prompt.Name == "ActivateEventPrompt")
+
+	if IsLockPrompt then
+		if Options.DoorsAutoInteractIgnore.Value["Locks"] then return end
+		local KeyItems = { "Key","GeneratorFuse","KeyBackdoor","KeyElectrical","KeyIron","Lockpick","SkeletonKey","Shears","Multitool" }
+		local OffhandKeyItems = { "Key","GeneratorFuse","KeyElectrical","KeyIron" }
+		local HasKey = false
+		for _, K in KeyItems do if hasItem(K, true) then HasKey = true break end end
+		for _, K in OffhandKeyItems do if hasItem(K) then HasKey = true break end end
+		if not HasKey then return end
+	end
+
+	if Prompt.Parent.Name == "CuttableVines" and not hasItem("Shears", true) and not hasItem("Multitool", true) or Prompt.Parent.Name == "Chest_Vine" and not hasItem("Shears", true) and not hasItem("Multitool", true) or Prompt.Parent.Name == "Cellar" and not hasItem("Shears", true) and not hasItem("Multitool", true) then return end
+	if Prompt.Parent.Name == "SkullLock" and not hasItem("SkeletonKey", true) then return end
+	if Prompt.Parent.Name == "Lock1" and not hasItem("Lockpick", true) and not hasItem("Multitool", true) or Prompt.Parent.Name == "Lock2" and not hasItem("Lockpick", true) and not hasItem("Multitool", true) then return end
+	if hasItem("Shears", true) and IsLockPrompt and Prompt.Parent.Name ~= "CuttableVines" and Prompt.Parent.Name ~= "Chest_Vine" and Prompt.Parent.Name ~= "Cellar" then return end
+
+	if Prompt.Parent.Name == "GlitchCube" and Options.DoorsAutoInteractIgnore.Value["Glitch Fragments"] then return end
+
+	if (Prompt.Parent.Name == "KeyObtain" and (hasItem("Key") or hasItem("KeyBackdoor")))
+		or (Prompt.Parent.Name == "ElectricalKeyObtain" and hasItem("KeyElectrical"))
+	then return end
+
+	if (Drops and Prompt:IsDescendantOf(Drops)) and Options.DoorsAutoInteractIgnore.Value["Dropped Items"] then return end
+	if Prompt.Parent.Name == "TrackLever" then return end
+	if Prompt.Name == "ActivateEventPrompt" and (Prompt.ActionText == "Close"
+		or Prompt.Parent.Name == "ElevatorBreaker"
+		or (Prompt.Parent.Parent and Prompt.Parent.Parent.Name == "IndustrialGate"))
+	then return end
+	if Prompt.Name == "ActivateEventPrompt" and (Prompt.Parent.Name == "Padlock" or Prompt.Parent.Name == "MinesAnchor") then return end
+	if Prompt.Parent.Name == "LeverForGate" and Prompt:GetAttribute("Interactions") then return end
+	if Prompt.Parent.Parent and (Prompt.Parent.Parent.Name == "DoorFake" or Prompt.Parent.Parent.Name == "FakeDoor") then return end
+	if Prompt.Parent:GetAttribute("JeffShop") and Options.DoorsAutoInteractIgnore.Value["Jeff Items"] then return end
+	if Prompt:GetAttribute("AutoInteractIgnore") then return end
+	if Prompt.Name == "PushPrompt" and Options.DoorsAutoInteractIgnore.Value["Minecarts"] then return end
+	if (Prompt.Parent.Name == "GoldPile" or Prompt.Parent.Name == "StardustPickup") and Options.DoorsAutoInteractIgnore.Value["Currency"] then return end
+
+	if Prompt.Parent.Name == "Bandage" then
+		local BPack = hasItem("BandagePack")
+		if Humanoid.Health >= Humanoid.MaxHealth and not BPack then return end
+		if BPack and type(BPack:GetAttribute("Durability"))=="number" and type(BPack:GetAttribute("DurabilityMax"))=="number" and BPack:GetAttribute("Durability") >= BPack:GetAttribute("DurabilityMax") then return end
+	end
+
+	if Prompt.Parent.Name == "Battery" then
+		local Tool = Character:FindFirstChildOfClass("Tool")
+		local BPack = hasItem("BatteryPack")
+		if not Tool and not BPack then return end
+		if Tool and Tool:GetAttribute("LightSource") then
+			if Tool:GetAttribute("Durability") and Tool:GetAttribute("DurabilityMax")
+				and Tool:GetAttribute("Durability") > Tool:GetAttribute("DurabilityMax")
+			then return end
+		elseif not BPack then
+			return
+		end
+		if BPack and type(BPack:GetAttribute("Durability"))=="number" and type(BPack:GetAttribute("DurabilityMax"))=="number" and BPack:GetAttribute("Durability") >= BPack:GetAttribute("DurabilityMax") then return end
+	end
+
+	if Prompt.Name == "HerbPrompt" then
+		local pg=player:FindFirstChild("PlayerGui")
+        local ui=pg and pg:FindFirstChild("MainUI")
+        local main=ui and ui:FindFirstChild("MainFrame")
+        local health=main and main:FindFirstChild("Healthbar")
+        local Effects=health and health:FindFirstChild("Effects")
+        local herb=Effects and Effects:FindFirstChild("HerbGreenEffect")
+        if herb and herb.Visible then return end
+	end
+
+	if (Prompt.Parent.Name == "LibraryHintPaper" or Prompt.Parent.Name == "PickupItem") and (hasItem("LibraryHintPaper") or hasItem("LibraryHintPaperHard")) then return end
+	if Prompt.Parent.Name == "AlarmClock" and hasItem("AlarmClock") then return end
+	if Prompt.Parent.Name == "KeyObtainFake" or Prompt.Parent.Name == "TithingPlate" then return end
+
+	extension.RequestPrompt(Prompt)
+	TriggerDebounce = true
+	
+	TriggerDebounce = false
+end
+
     end
     toggle(automation,"DoorsAutoPadlock","Auto unlock padlock (known code)")
     slider(automation,"DoorsPadlockRange","Unlock distance",10,2,20)
@@ -1858,7 +2015,6 @@ local function installReferencePort()
     toggle(automation,"DoorsSpectate","Spectate entity")
     dropdown(automation,"DoorsSpectateMode","Spectate mode",{"Player to entity","Entity camera"})
     multi(automation,"DoorsSpectateEntities","Spectate entity list",entityChoices)
-    automation:AddLabel("Padlock only submits a complete discovered code; no guessing. Anchor uses the current visible designation/code, proximity and an existing AnchorRemote. Unsupported floors skip these adapters.",true)
     local automationLabel=automation:AddLabel("Automation: idle")
     local function libraryCode()
         local char=player.Character;local pack=player:FindFirstChild("Backpack")
@@ -1978,7 +2134,6 @@ local function installReferencePort()
         if remote and remote:IsA("RemoteEvent") then remote:FireServer() else Library:Notify("Revive remote unavailable",4) end
     end})
     misc:AddButton({Text="Reset Character",DoubleClick=true,Tooltip="Kills your character locally; double-click to confirm.",Func=function() local h=hum() if h then h.Health=0 end end})
-    misc:AddLabel("These buttons execute only when double-clicked. Revive is not free and is not automatic. The original Loader.luau remains compatible; this is still one Doors.luau module, including lobby UI.",true)
 
     -- Remaining portable General controls from the reference (all OFF).
     toggle(interaction,"DoorsDoorReach","Door reach (server request)")
@@ -1998,7 +2153,6 @@ local function installReferencePort()
     multi(automation,"DoorsAutoClosetIgnore","Auto closet: ignore entities",entityChoices,{})
     slider(automation,"DoorsAutoClosetRange","Threat radius",150,25,500)
     toggle(automation,"DoorsAutoBreaker","Auto breaker box (after interaction)")
-    automation:AddLabel("Auto Closet never auto-exits: a streamed-out threat is not proof of safety. It only enters a nearby unoccupied spot with a usable HidePrompt. Breaker responds to changing displayed instructions, not a guessed solution.",true)
     local doorTimes=setmetatable({}, {__mode="k"})
     local breakerCodes=setmetatable({}, {__mode="k"})
     local lastCloset,lastBreaker=-math.huge,-math.huge
@@ -2112,7 +2266,7 @@ local function installReferencePort()
     end
     -- Individual feature-off callbacks also restore at the next 0.2s adapter tick.
     -- All pools are restored synchronously by the unload handlers, including pending holds.
-    onCleanup(function() table.clear(notices);table.clear(visualObjects);table.clear(audioObjects);table.clear(hazards) end)
+    onCleanup(function() for _,n in ipairs(notices) do removeNotice(n) end table.clear(notices);table.clear(visualObjects);table.clear(audioObjects);table.clear(hazards) end)
 end
 installReferencePort()
 end
@@ -2133,7 +2287,7 @@ if saveOk then
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
     SaveManager:SetIgnoreIndexes({"DoorsMenuKey"})
-    SaveManager:SetFolder("ClaudeHub/DOORS/configs-v040")
+    SaveManager:SetFolder("ClaudeHub/DOORS/configs-v043")
     SaveManager:BuildConfigSection(Tabs.Settings)
     -- No auto-load: a saved config cannot silently enable gameplay aids.
 end

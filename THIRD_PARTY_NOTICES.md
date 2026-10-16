@@ -1,4 +1,4 @@
-# Third-party notices — ClaudeHub DOORS v0.4.2
+# Third-party notices — ClaudeHub DOORS v0.4.3
 
 ## Abysall
 
@@ -64,3 +64,13 @@ SOFTWARE.
 ## v0.4.2 local changes
 
 Whole-rig Seek/Screech/Eyes identity, current-room ESP lifecycle, separate Auto Interact filters, model-pivot/furniture LOS handling and notification card layouts are ClaudeHub adaptations of the supplied reference patterns. Global unowned threats remain visible across room changes. Native DOORS achievement UI is not cloned.
+
+## v0.4.3 copied interaction routines
+
+TriggerPrompt filter logic was copied from the user-supplied Abysall Main.luau, with local control/dependency
+names and optional UI guards adapted. The fallback follows that source's temporary camera-adjacent prompt
+reparenting, hold-input and field-restoration technique; ClaudeHub adds bounded, cancellable lifecycle and
+room/range checks. Auto Interact scans all eligible prompts at 1/60 s; the previous unrelated distance cap is
+removed. Reach uses source-style base-distance multiplication with immediate callbacks and extra current-room
+scoping. Notification animation uses TweenService rather than 5Hz manual interpolation. Full original MIT
+copyright remains in this file and Doors.luau. No source analytics or external root loader is executed.
