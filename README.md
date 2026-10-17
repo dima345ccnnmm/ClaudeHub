@@ -36,12 +36,4 @@ Rooms, markers and entity alerts depend on objects replicated to your client. Un
 
 Syntax and deterministic mock regressions were checked locally. Actual Roblox gameplay and executor compatibility still require in-game testing. DOORS updates may change object names or layout.
 
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `Loader.luau` | Universe-aware entry point |
-| `Doors.luau` | DOORS-specific initial module |
-| `ClaudeHub.luau` | Existing universal module, unchanged by this release |
-
 The repository is public. Executable source is visible to anyone who downloads it. The loader and UI fetch remote Lua; only execute code from sources you trust.
