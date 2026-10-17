@@ -1,11 +1,11 @@
-ClaudeHub JJS v0.1.0 — third-party notices
+ClaudeHub JJS v0.2.0 — third-party notices
 
 Obsidian UI Library, ThemeManager and SaveManager
 Author: deividcomsono and contributors
 Source: https://github.com/deividcomsono/Obsidian
 Documentation: https://docs.mspaint.cc/obsidian
-License: MIT; full license included as Obsidian-LICENSE.txt.
-The module downloads the original library and optional addons at runtime.
-ObsidianUltra is not used by JJS.luau.
+License: MIT. Full text: Obsidian-LICENSE.txt.
+Dependencies are downloaded at runtime. JJS uses ordinary Obsidian, not ObsidianUltra.
 
-No code from Abysall is incorporated into this JJS release.
+No code from Abysall or third-party JJS scripts is incorporated in this release.
+No community animation ID list is embedded or claimed verified. Defense profiles are user-configured in-game.

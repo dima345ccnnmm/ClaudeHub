@@ -1,6 +1,6 @@
--- ClaudeHub JJS v0.1.0 | Ordinary Obsidian (deividcomsono, MIT).
--- Client-side tools only. No combat remotes, ability automation or anticheat bypass.
-local VERSION = "0.1.0"
+-- ClaudeHub JJS v0.2.0 | Ordinary Obsidian (deividcomsono, MIT).
+-- Defensive input automation uses user-defined attack IDs; no game remotes or bypass.
+local VERSION = "0.2.0"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubJJS"
 if env[KEY] and not env[KEY].Unloaded then
@@ -13,6 +13,8 @@ local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
 local Lighting = game:GetService("Lighting")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local function download(path)
@@ -34,8 +36,17 @@ local cameraState, mouseState
 local freePosition, freePitch, freeYaw
 local freeMoving = false
 local lastJump = 0
-local timer = {Elapsed = 0, Running = false, At = 0}
-local points = {}
+local combatTarget, smoothCamera, controlsState
+local attackIDs, consumed = {}, setmetatable({}, {__mode="k"})
+local defenseHeld, defenseUntil, counterUntil, nextCounter = nil, 0, 0, 0
+local counterHeld
+local inputService
+local animationScan = 0
+local serverRows, serverMap, serverCursor = {}, {}, nil
+local serversBusy, teleportBusy, serverGeneration = false, false, 0
+local serverStatus, defenseStatus, targetStatus
+local requestHTTP = (type(request)=="function" and request) or (type(http_request)=="function" and http_request)
+    or (type(syn)=="table" and syn.request) or (type(http)=="table" and http.request)
 local playerNames = {}
 local freeAction = "ClaudeHubJJS_Freecam"
 local function connect(signal, fn)
@@ -74,7 +85,7 @@ local function override(pool, object, name, value)
     data.Applied = value
     if object[name] ~= value then object[name] = value end
 end
-for _, name in ipairs({"Speed", "Jump", "FOV", "Zoom", "Light"}) do pools[name] = {} end
+for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light"}) do pools[name] = {} end
 local function clearMarker(p)
     local m = markers[p]
     if m then m.Highlight:Destroy(); m.Gui:Destroy(); markers[p] = nil end
@@ -92,6 +103,10 @@ end
 local function releaseCamera()
     CAS:UnbindAction(freeAction)
     freeMoving = false
+    if controlsState then
+        pcall(function() if controlsState.WasEnabled then controlsState.Controls:Enable() end end)
+        controlsState = nil
+    end
     restore(pools.Jump)
     releaseMouse()
     if cameraState then
@@ -99,7 +114,7 @@ local function releaseCamera()
         pcall(function()
             if s.Camera.CameraType == s.OwnedType then
                 s.Camera.CameraType = s.Type
-                if s.Mode == "Free" then s.Camera.CFrame = s.CFrame end
+                if s.Mode == "Free" then s.Camera.CFrame, s.Camera.Focus = s.CFrame, s.Focus end
                 local _, h = character(player)
                 s.Camera.CameraSubject = s.Subject and s.Subject.Parent and s.Subject or h
             end
@@ -121,18 +136,112 @@ local function startCamera(mode)
         if not subject then return false end
     end
     cameraState = {Camera=camera, Mode=mode, Type=camera.CameraType, Subject=camera.CameraSubject,
-        CFrame=camera.CFrame, OwnedType=mode == "Free" and Enum.CameraType.Scriptable or Enum.CameraType.Custom}
+        CFrame=camera.CFrame, Focus=camera.Focus, OwnedType=mode == "Free" and Enum.CameraType.Scriptable or Enum.CameraType.Custom}
     camera.CameraType = cameraState.OwnedType
     if mode == "Spectate" then camera.CameraSubject = subject
     else
         freePosition = camera.CFrame.Position
         freePitch, freeYaw = camera.CFrame:ToOrientation()
+        pcall(function()
+            local scripts = player:FindFirstChild("PlayerScripts")
+            local module = scripts and scripts:FindFirstChild("PlayerModule")
+            if module then
+                local controls = require(module):GetControls()
+                if controls.controlsEnabled == true then
+                    controlsState = {Controls=controls, WasEnabled=true}
+                    controls:Disable()
+                end
+            end
+        end)
         CAS:BindActionAtPriority(freeAction, function()
             return Enum.ContextActionResult.Sink
-        end, false, 3000, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
+        end, false, 10000, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
             Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Space, Enum.KeyCode.LeftControl, Enum.KeyCode.LeftShift)
     end
+    smoothCamera = nil
     return true
+end
+local function getInputService()
+    if inputService then return inputService end
+    local ok, service = pcall(function() return game:GetService("VirtualInputManager") end)
+    if ok and service then inputService = service end
+    return inputService
+end
+local function sendKey(code, down)
+    local service = getInputService()
+    if not service then return false end
+    return pcall(function() service:SendKeyEvent(down, code, false, game) end)
+end
+local function releaseDefense()
+    if defenseHeld then sendKey(defenseHeld, false); defenseHeld = nil end
+    if counterHeld then sendKey(counterHeld, false); counterHeld = nil end
+    defenseUntil, counterUntil = 0, 0
+end
+local function resetCombat()
+    releaseDefense()
+    restore(pools.Facing)
+    combatTarget = nil
+    table.clear(consumed)
+end
+local function parseAttackIDs()
+    table.clear(attackIDs)
+    for id in tostring(val("AttackIDs", "")):gmatch("%d+") do
+        if #id >= 5 and #id <= 20 then attackIDs[id] = true end
+    end
+    table.clear(consumed)
+    releaseDefense()
+end
+local function validEnemy(p, origin, maxDistance, visible)
+    if p == player then return end
+    local c,h,r = character(p)
+    if not c or (on("CombatTeamFilter") and player.Team ~= nil and p.Team == player.Team) then return end
+    local distance = (r.Position-origin).Magnitude
+    if distance > maxDistance then return end
+    if visible then
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = {player.Character, markerFolder}
+        local hit = workspace:Raycast(origin, r.Position-origin, params)
+        if hit and not hit.Instance:IsDescendantOf(c) then return end
+    end
+    return c,h,r,distance
+end
+local function selectTarget()
+    local _,_,root = character(player)
+    if not root then return end
+    local range = val("TargetRange",50)
+    local visible = on("CombatWallCheck")
+    local mode = val("TargetMode","Nearest")
+    if mode == "Selected" then
+        local p = playerNames[val("CombatPlayer","")]
+        if p and validEnemy(p, root.Position, range, visible) then return p end
+        return
+    end
+    local best, score = nil, math.huge
+    local camera = workspace.CurrentCamera
+    for _,p in ipairs(Players:GetPlayers()) do
+        local _,_,r,distance = validEnemy(p, root.Position, range, visible)
+        if r then
+            local current = distance
+            if mode == "Crosshair" then
+                if not camera then continue end
+                local screen,inView = camera:WorldToViewportPoint(r.Position)
+                if not inView or screen.Z <= 0 then continue end
+                current = (Vector2.new(screen.X,screen.Y)-camera.ViewportSize/2).Magnitude
+            end
+            if current < score then best,score = p,current end
+        end
+    end
+    return best
+end
+local function jumpNow()
+    if not ready or not on("InfiniteJump") or on("Freecam") or not focused or UIS:GetFocusedTextBox() or os.clock()-lastJump < 0.12 then return end
+    local _,h,r = character(player)
+    if not h or r.Anchored or h.Sit then return end
+    lastJump = os.clock()
+    h:ChangeState(Enum.HumanoidStateType.Jumping)
+    local velocity = r.AssemblyLinearVelocity
+    r.AssemblyLinearVelocity = Vector3.new(velocity.X, val("JumpVelocity",50), velocity.Z)
 end
 local function cleanup()
     if closed then return end
@@ -141,6 +250,8 @@ local function cleanup()
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubJJS_Camera")
     releaseCamera()
+    resetCombat()
+    serverGeneration += 1
     for _, pool in pairs(pools) do restore(pool) end
     clearMarkers()
     if hud then hud:Destroy() end
@@ -159,7 +270,8 @@ local success, failure = xpcall(function()
         Character=Window:AddTab("Character", "user"),
         Visuals=Window:AddTab("Visuals", "eye"),
         Camera=Window:AddTab("Camera", "camera"),
-        Training=Window:AddTab("Training", "timer"),
+        Combat=Window:AddTab("Combat", "swords"),
+        Servers=Window:AddTab("Servers", "server"),
         Settings=Window:AddTab("Settings", "settings"),
     }
     local function toggle(box, id, text, key)
@@ -192,16 +304,17 @@ local success, failure = xpcall(function()
     local serverLabel = home:AddLabel("Players: --")
     local info = Tabs.Home:AddRightGroupbox("Release", "info")
     info:AddLabel("Ordinary Obsidian")
-    info:AddLabel("Character / Visuals / Camera / Training")
+    info:AddLabel("Character / Visuals / Camera / Combat / Servers")
     info:AddLabel("Gameplay features start disabled")
-    info:AddLabel("No combat automation / bypass")
+    info:AddLabel("No anticheat bypass")
     info:AddLabel("UI: deividcomsono (MIT)")
     local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
-    toggle(char, "Speed", "Legit Speed Boost (+4)", "V")
+    toggle(char, "Speed", "WalkSpeed", "V")
+    slider(char, "WalkSpeed", "Speed", 20, 0, 120)
     toggle(char, "InfiniteJump", "Infinite Jump", "J")
-    local zoom = Tabs.Character:AddRightGroupbox("Perspective", "scan")
-    toggle(zoom, "ThirdPerson", "Third Person", "T")
-    slider(zoom, "ThirdDistance", "Camera Distance", 10, 3, 30)
+    slider(char, "JumpVelocity", "Jump Strength", 50, 20, 100)
+    local hudBox = Tabs.Character:AddRightGroupbox("HUD", "monitor")
+    toggle(hudBox, "HUD", "Combat HUD", "F9")
     local visuals = Tabs.Visuals:AddLeftGroupbox("Players", "users")
     toggle(visuals, "ESP", "Player ESP", "H")
     toggle(visuals, "ESPNames", "Names")
@@ -218,6 +331,8 @@ local success, failure = xpcall(function()
     local cam = Tabs.Camera:AddLeftGroupbox("Camera", "camera")
     toggle(cam, "CustomFOV", "Custom FOV")
     slider(cam, "FOV", "Field of View", 80, 40, 120)
+    toggle(cam, "AntiShake", "Anti Camera Shake")
+    slider(cam, "Stabilize", "Stabilization", 70, 10, 95)
     toggle(cam, "Freecam", "Freecam", "F6")
     slider(cam, "FreecamSpeed", "Freecam Speed", 32, 5, 150)
     local watch = Tabs.Camera:AddRightGroupbox("Spectate", "users")
@@ -233,6 +348,11 @@ local success, failure = xpcall(function()
             end
         end
         table.sort(names)
+        if Options.CombatPlayer then
+            local combatSelected=Options.CombatPlayer.Value
+            Options.CombatPlayer:SetValues(names)
+            if combatSelected and not playerNames[combatSelected] then Options.CombatPlayer:SetValue(nil) end
+        end
         local selected = Options.SpectatePlayer.Value
         Options.SpectatePlayer:SetValues(names)
         if selected and not playerNames[selected] then
@@ -241,37 +361,144 @@ local success, failure = xpcall(function()
         end
     end
     action(watch, "Refresh Players", refreshPlayers)
-    local waypoint = Tabs.Training:AddLeftGroupbox("Waypoints", "map-pin")
-    waypoint:AddDropdown("PointSlot", {Text="Slot", Values={"1", "2", "3"}, Default=1})
-    local pointLabel = waypoint:AddLabel("Slot: empty")
-    local function updatePointLabel()
-        local point = points[val("PointSlot", "1")]
-        pointLabel:SetText(point and string.format("Saved: %.0f, %.0f, %.0f", point.Position.X, point.Position.Y, point.Position.Z) or "Slot: empty")
+    local targetBox = Tabs.Combat:AddLeftGroupbox("Targeting", "crosshair")
+    targetBox:AddDropdown("TargetMode", {Text="Target Mode", Values={"Nearest","Crosshair","Selected"}, Default=1})
+    targetBox:AddDropdown("CombatPlayer", {Text="Selected Player", Values={}, AllowNull=true})
+    toggle(targetBox, "FaceTarget", "Face Target (Gamepad Style)", "X")
+    slider(targetBox, "TargetRange", "Target Range", 50, 5, 200)
+    slider(targetBox, "TurnSpeed", "Turn Speed", 25, 5, 60)
+    slider(targetBox, "Prediction", "Movement Prediction", 0, 0, 0.25, 2)
+    toggle(targetBox, "CombatWallCheck", "Wall Check")
+    toggle(targetBox, "CombatTeamFilter", "Hide Teammates")
+    toggle(targetBox, "TargetHighlight", "Highlight Target")
+    targetStatus = targetBox:AddLabel("Target: none")
+    local defense = Tabs.Combat:AddRightGroupbox("Defense", "shield")
+    toggle(defense, "AutoBlock", "Auto Block", "B")
+    toggle(defense, "AutoCounter", "Auto Counter", "C")
+    slider(defense, "DefenseRange", "Defense Range", 12, 3, 30)
+    slider(defense, "BlockHold", "Block Hold", 0.3, 0.1, 0.8, 2)
+    slider(defense, "CounterCooldown", "Counter Interval", 5, 1, 30, 1)
+    defense:AddDropdown("CounterKey", {Text="Counter Ability Key", Values={"None","One","Two","Three","Four","R"}, Default=1})
+    defense:AddInput("AttackIDs", {Text="Attack Animation IDs", Default="", Finished=true})
+    defense:AddDropdown("ObservedAnimation", {Text="Observed Attack", Values={}, AllowNull=true})
+    local function scanAnimations()
+        local p = selectTarget()
+        local _,h
+        if p then _,h = character(p) end
+        local animator = h and h:FindFirstChildOfClass("Animator")
+        if not animator then notify("Choose a live target first"); return end
+        local ids, seen = {}, {}
+        for _,track in ipairs(animator:GetPlayingAnimationTracks()) do
+            local id = track.Animation and track.Animation.AnimationId:match("%d+")
+            if id and not seen[id] then table.insert(ids,id);seen[id]=true end
+        end
+        table.sort(ids)
+        Options.ObservedAnimation:SetValues(ids)
+        Options.ObservedAnimation:SetValue(ids[1])
+        notify(#ids > 0 and "Choose the attack ID, then add it" or "No playing animations on this target")
     end
-    action(waypoint, "Save Position", function()
-        local c = character(player)
-        if not c then notify("Character is not ready"); return end
-        points[val("PointSlot", "1")] = c:GetPivot()
-        updatePointLabel(); notify("Position saved")
-    end, "K", "SavePointBind")
-    action(waypoint, "Return to Position", function()
-        local point = points[val("PointSlot", "1")]
-        local c, _, r = character(player)
-        if not point then notify("This slot is empty"); return end
-        if not c then notify("Character is not ready"); return end
-        c:PivotTo(point)
-        r.AssemblyLinearVelocity, r.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-    end, "L", "ReturnPointBind")
-    action(waypoint, "Clear Position", function() points[val("PointSlot", "1")] = nil; updatePointLabel() end)
-    local training = Tabs.Training:AddRightGroupbox("Timer & HUD", "timer")
-    local timerLabel = training:AddLabel("Timer: 00:00.0")
-    action(training, "Start / Pause Timer", function()
-        if timer.Running then timer.Elapsed += os.clock() - timer.At
-        else timer.At = os.clock() end
-        timer.Running = not timer.Running
-    end, "F8", "TimerBind")
-    action(training, "Reset Timer", function() timer.Elapsed, timer.At = 0, os.clock() end)
-    toggle(training, "HUD", "Training HUD", "F9")
+    action(defense, "Scan Target Animations", scanAnimations)
+    action(defense, "Add Selected Attack ID", function()
+        local id = val("ObservedAnimation", "")
+        if id == "" then notify("Scan and select an attack animation first"); return end
+        if not attackIDs[id] then Options.AttackIDs:SetValue(tostring(val("AttackIDs","")) .. " " .. id) end
+    end)
+    action(defense, "Clear Attack IDs", function() Options.AttackIDs:SetValue("") end)
+    defenseStatus = defense:AddLabel("Defense: configure attack IDs")
+    local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
+    servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
+    servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
+    serverStatus = servers:AddLabel("Servers: not loaded")
+    local serverActions = Tabs.Servers:AddRightGroupbox("Connection", "network")
+    serverActions:AddLabel("Job: " .. (game.JobId ~= "" and game.JobId or "unavailable"))
+    serverActions:AddInput("JobID", {Text="Job ID", Default="", Finished=true})
+    local function teleport(job)
+        if teleportBusy then notify("Teleport already in progress"); return end
+        if type(job) ~= "string" or #job < 1 or #job > 100 or not job:match("^[%w%-]+$") then notify("Invalid Job ID"); return end
+        teleportBusy = true
+        releaseDefense()
+        local ok,err = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId,job,player) end)
+        if not ok then teleportBusy=false;notify("Teleport failed: " .. tostring(err));return end
+        notify("Teleport requested")
+        task.delay(15,function() if not closed then teleportBusy=false end end)
+    end
+    local function displayServers()
+        local sorting = val("ServerSort","Players (low)")
+        table.sort(serverRows,function(a,b)
+            local aa = sorting == "Ping (low)" and (tonumber(a.ping) or math.huge) or a.playing
+            local bb = sorting == "Ping (low)" and (tonumber(b.ping) or math.huge) or b.playing
+            return aa == bb and a.id < b.id or aa < bb
+        end)
+        local labels = {}
+        table.clear(serverMap)
+        for _,row in ipairs(serverRows) do
+            local label = string.format("%d/%d | %s ms | %s",row.playing,row.maxPlayers,tostring(row.ping or "?"),row.id)
+            table.insert(labels,label);serverMap[label]=row.id
+        end
+        Options.ServerChoice:SetValues(labels)
+        serverStatus:SetText(string.format("Servers: %d%s",#labels,serverCursor and " | more available" or ""))
+    end
+    local function fetchServers(reset)
+        if serversBusy then notify("Server list is already loading"); return end
+        if not reset and not serverCursor then notify("No next page"); return end
+        serversBusy=true
+        serverGeneration+=1
+        local generation=serverGeneration
+        local cursor = not reset and serverCursor or nil
+        serverStatus:SetText("Loading public servers...")
+        task.spawn(function()
+            local ok,result=pcall(function()
+                local url="https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
+                if cursor then url ..= "&cursor=" .. HttpService:UrlEncode(cursor) end
+                local body
+                if requestHTTP then
+                    local response=requestHTTP({Url=url,Method="GET"})
+                    assert(response and (response.StatusCode==200 or response.Success==true), "HTTP " .. tostring(response and response.StatusCode))
+                    body=response.Body
+                else body=game:HttpGet(url) end
+                assert(type(body)=="string" and #body < 2000000,"Invalid server response")
+                local data=HttpService:JSONDecode(body)
+                assert(type(data)=="table" and type(data.data)=="table","Invalid server data")
+                return data
+            end)
+            if closed or generation~=serverGeneration then return end
+            serversBusy=false
+            if not ok then serverStatus:SetText("Server list unavailable");notify("Server list: " .. tostring(result));return end
+            if reset then table.clear(serverRows);Options.ServerChoice:SetValue(nil) end
+            local known={}
+            for _,row in ipairs(serverRows) do known[row.id]=true end
+            for _,row in ipairs(result.data) do
+                if type(row)=="table" and type(row.id)=="string" and type(row.playing)=="number" and type(row.maxPlayers)=="number"
+                    and row.id~=game.JobId and row.playing<row.maxPlayers and not known[row.id] and #serverRows<500 then
+                    table.insert(serverRows,row);known[row.id]=true
+                end
+            end
+            serverCursor=type(result.nextPageCursor)=="string" and result.nextPageCursor or nil
+            if #serverRows>=500 then serverCursor=nil end
+            displayServers()
+        end)
+    end
+    action(servers,"Refresh Servers",function() fetchServers(true) end)
+    action(servers,"Load Next Page",function() fetchServers(false) end)
+    action(servers,"Join Selected Server",function()
+        local job=serverMap[val("ServerChoice","")]
+        if not job then notify("Select a server first");return end
+        teleport(job)
+    end)
+    action(servers,"Hop to First Listed",function()
+        if not serverRows[1] then notify("Load public servers first");return end
+        teleport(serverRows[1].id)
+    end)
+    action(serverActions,"Rejoin",function() teleport(game.JobId) end)
+    action(serverActions,"Join Job ID",function() teleport(tostring(val("JobID",""))) end)
+    action(serverActions,"Copy Job ID",function()
+        if type(setclipboard)~="function" then notify("Clipboard is not supported");return end
+        setclipboard(game.JobId);notify("Job ID copied")
+    end)
+    Options.ServerSort:OnChanged(displayServers)
+    connect(TeleportService.TeleportInitFailed,function(p,_,message)
+        if p==player then teleportBusy=false;notify("Teleport failed: " .. tostring(message)) end
+    end)
     local menu = Tabs.Settings:AddLeftGroupbox("Interface", "settings")
     menu:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {Default="RightControl", NoUI=true, Text="Menu"})
     Library.ToggleKeybind = Options.MenuKeybind
@@ -280,8 +507,12 @@ local success, failure = xpcall(function()
     hud.Name, hud.ResetOnSpawn, hud.ZIndexBehavior = "ClaudeHubJJS_HUD", false, Enum.ZIndexBehavior.Sibling
     hud.DisplayOrder = 20
     hud.Parent = player:WaitForChild("PlayerGui")
+    local targetMarker = Instance.new("Highlight", hud)
+    targetMarker.Name, targetMarker.Enabled = "CombatTarget", false
+    targetMarker.FillColor, targetMarker.OutlineColor = Color3.fromRGB(255,90,100), Color3.fromRGB(255,170,70)
+    targetMarker.FillTransparency, targetMarker.DepthMode = 0.8, Enum.HighlightDepthMode.AlwaysOnTop
     local frame = Instance.new("Frame")
-    frame.Name, frame.Size, frame.Position = "DraggableHUD", UDim2.fromOffset(290,112), UDim2.fromOffset(24,110)
+    frame.Name, frame.Size, frame.Position = "DraggableHUD", UDim2.fromOffset(330,112), UDim2.fromOffset(24,110)
     frame.BackgroundColor3, frame.BackgroundTransparency = Color3.fromRGB(17,15,25), 0.12
     frame.BorderSizePixel, frame.Active, frame.Visible = 0, true, false
     frame.Parent = hud
@@ -300,7 +531,7 @@ local success, failure = xpcall(function()
         frame.Position = UDim2.fromOffset(math.clamp(x,0,math.max(0,size.X-frame.AbsoluteSize.X)),
             math.clamp(y,0,math.max(0,size.Y-frame.AbsoluteSize.Y-36)))
     end
-    action(training, "Reset HUD Position", function() clampHUD(24,110) end)
+    action(hudBox, "Reset HUD Position", function() clampHUD(24,110) end)
     connect(frame.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragInput, dragStart, dragOrigin = input, input.Position, frame.AbsolutePosition
@@ -319,7 +550,7 @@ local success, failure = xpcall(function()
     connect(UIS.InputEnded, function(input)
         if input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then dragInput = nil end
     end)
-    connect(UIS.WindowFocusReleased, function() focused = false; dragInput = nil; freeMoving = false; releaseMouse() end)
+    connect(UIS.WindowFocusReleased, function() focused = false; dragInput = nil; freeMoving = false; releaseMouse(); resetCombat() end)
     connect(UIS.WindowFocused, function() focused = true end)
     markerFolder = Instance.new("Folder", workspace); markerFolder.Name = "ClaudeHubJJS_Markers"
     local function updateMarkers()
@@ -368,6 +599,10 @@ local success, failure = xpcall(function()
                 return
             end
             if on(other) then Toggles[other]:SetValue(false) end
+            if mode == "Free" then
+                resetCombat()
+                Library:Toggle(false)
+            end
             if not startCamera(mode) then Toggles[id]:SetValue(false); notify("Camera or selected player is not ready") end
         end)
     end
@@ -376,8 +611,32 @@ local success, failure = xpcall(function()
     Options.SpectatePlayer:OnChanged(function()
         if ready and on("Spectate") and not startCamera("Spectate") then Toggles.Spectate:SetValue(false) end
     end)
-    Options.PointSlot:OnChanged(updatePointLabel)
-    for id, poolName in pairs({Speed="Speed", ThirdPerson="Zoom", CustomFOV="FOV"}) do
+    Options.AttackIDs:OnChanged(parseAttackIDs)
+    Options.CounterKey:OnChanged(function()
+        releaseDefense()
+        if ready and val("CounterKey","None")=="None" and on("AutoCounter") then Toggles.AutoCounter:SetValue(false) end
+    end)
+    Options.CounterCooldown:OnChanged(function() nextCounter = os.clock() + val("CounterCooldown",5); releaseDefense() end)
+    for _,id in ipairs({"AutoBlock","AutoCounter"}) do
+        local name=id
+        Toggles[name]:OnChanged(function()
+            releaseDefense()
+            if not ready or not on(name) then return end
+            parseAttackIDs()
+            if not next(attackIDs) then
+                Toggles[name]:SetValue(false);notify("Add the enemy's attack animation IDs first");return
+            end
+            if name=="AutoCounter" and val("CounterKey","None")=="None" then
+                Toggles[name]:SetValue(false);notify("Choose your counter ability key first");return
+            end
+            if not getInputService() then
+                Toggles[name]:SetValue(false);notify("This environment does not support defensive key input")
+            end
+        end)
+    end
+    Toggles.FaceTarget:OnChanged(function() if not on("FaceTarget") then restore(pools.Facing) end end)
+    Toggles.AntiShake:OnChanged(function() smoothCamera=nil end)
+    for id, poolName in pairs({Speed="Speed", CustomFOV="FOV"}) do
         local name = poolName
         Toggles[id]:OnChanged(function() if ready then restore(pools[name]) end end)
     end
@@ -393,6 +652,8 @@ local success, failure = xpcall(function()
         for name, target in pairs(playerNames) do
             if target == p then
                 if val("SpectatePlayer", "") == name then Toggles.Spectate:SetValue(false); Options.SpectatePlayer:SetValue(nil) end
+                if Options.CombatPlayer.Value==name then Options.CombatPlayer:SetValue(nil) end
+                if combatTarget==p then resetCombat() end
                 playerNames[name] = nil
             end
         end
@@ -401,13 +662,85 @@ local success, failure = xpcall(function()
     connect(player.CharacterAdded, function()
         if not ready then return end
         Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
-        restore(pools.Speed); restore(pools.Zoom)
+        restore(pools.Speed); resetCombat(); smoothCamera=nil
     end)
-    connect(UIS.JumpRequest, function()
-        if not ready or not on("InfiniteJump") or on("Freecam") or menuBusy() or os.clock() - lastJump < 0.15 then return end
-        local _, h = character(player)
-        if h then lastJump = os.clock(); h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    connect(UIS.JumpRequest,jumpNow)
+    connect(UIS.InputBegan,function(input,processed)
+        if input.KeyCode==Enum.KeyCode.Space and not processed then jumpNow() end
     end)
+    local function updateCombat(dt)
+        if menuBusy() or on("Freecam") or on("Spectate") then
+            resetCombat();targetMarker.Enabled=false
+            if defenseStatus then defenseStatus:SetText("Defense: paused") end
+            return
+        end
+        local _,hum,root=character(player)
+        if not root then resetCombat();targetMarker.Enabled=false;return end
+        local active=on("FaceTarget") or on("AutoBlock") or on("AutoCounter") or on("TargetHighlight") or on("HUD")
+        if not active then resetCombat();targetMarker.Enabled=false;return end
+        combatTarget=selectTarget()
+        local tc,_,tr
+        if combatTarget then tc,_,tr=character(combatTarget) end
+        for object in pairs(pools.Facing) do if object~=hum then restore(pools.Facing);break end end
+        if tr and on("FaceTarget") and not root.Anchored and not hum.Sit then
+            override(pools.Facing,hum,"AutoRotate",false)
+            local aim=tr.Position+tr.AssemblyLinearVelocity*val("Prediction",0)
+            local flat=Vector3.new(aim.X,root.Position.Y,aim.Z)
+            if (flat-root.Position).Magnitude>0.05 then
+                root.CFrame=root.CFrame:Lerp(CFrame.lookAt(root.Position,flat),1-math.exp(-val("TurnSpeed",25)*dt))
+            end
+        elseif next(pools.Facing) then restore(pools.Facing) end
+        targetMarker.Adornee=tc
+        targetMarker.Enabled=tc~=nil and on("TargetHighlight")
+        local now=os.clock()
+        if counterHeld and now>=counterUntil then sendKey(counterHeld,false);counterHeld=nil end
+        if defenseHeld and now>=defenseUntil then sendKey(defenseHeld,false);defenseHeld=nil end
+        if not on("AutoBlock") and not on("AutoCounter") then
+            releaseDefense();defenseStatus:SetText("Defense: off");return
+        end
+        if not next(attackIDs) then releaseDefense();defenseStatus:SetText("Defense: no attack IDs");return end
+        animationScan+=dt
+        if animationScan<0.04 then return end
+        animationScan=0
+        local threat,unhandled
+        local playing={}
+        for _,p in ipairs(Players:GetPlayers()) do
+            local _,h,r=validEnemy(p,root.Position,val("DefenseRange",12),on("CombatWallCheck"))
+            if not r then continue end
+            local toward=root.Position-r.Position
+            if toward.Magnitude<0.1 or r.CFrame.LookVector:Dot(toward.Unit)<0.25 then continue end
+            local animator=h:FindFirstChildOfClass("Animator")
+            if not animator then continue end
+            for _,track in ipairs(animator:GetPlayingAnimationTracks()) do
+                local id=track.Animation and track.Animation.AnimationId:match("%d+")
+                if id and attackIDs[id] and track.IsPlaying and not track.Looped then
+                    playing[track]=true
+                    local data=consumed[track]
+                    if data and track.TimePosition+0.02<data.Position then consumed[track]=nil;data=nil end
+                    if data then data.Position=track.TimePosition elseif not unhandled then unhandled=track end
+                    threat=threat or track
+                end
+            end
+        end
+        for track in pairs(consumed) do if not playing[track] then consumed[track]=nil end end
+        if unhandled and on("AutoCounter") and not counterHeld and now>=nextCounter and val("CounterKey","None")~="None" then
+            if defenseHeld then sendKey(defenseHeld,false);defenseHeld=nil end
+            local code=Enum.KeyCode[val("CounterKey","None")]
+            if sendKey(code,true) then
+                counterHeld=code;counterUntil=now+0.07;nextCounter=now+val("CounterCooldown",5)
+                consumed[unhandled]={Position=unhandled.TimePosition}
+            else
+                Toggles.AutoCounter:SetValue(false);notify("Counter key input failed")
+            end
+        elseif threat and on("AutoBlock") and not counterHeld and (defenseHeld or not UIS:IsKeyDown(Enum.KeyCode.F)) then
+            if not defenseHeld then
+                if sendKey(Enum.KeyCode.F,true) then defenseHeld=Enum.KeyCode.F
+                else Toggles.AutoBlock:SetValue(false);notify("Block key input failed") end
+            end
+            if defenseHeld then defenseUntil=now+val("BlockHold",0.3) end
+        end
+        defenseStatus:SetText(counterHeld and "Defense: counter" or defenseHeld and "Defense: blocking" or "Defense: waiting for attack")
+    end
     local accumulator = 0
     connect(RunService.Heartbeat, function(dt)
         if not ready then return end
@@ -415,18 +748,9 @@ local success, failure = xpcall(function()
         -- Old character references must not survive respawn or removal.
         for object in pairs(pools.Speed) do if object ~= h then restore(pools.Speed); break end end
         if h and on("Speed") and not on("Freecam") then
-            local fields = pools.Speed[h]
-            local data = fields and fields.WalkSpeed
-            local base = data and h.WalkSpeed == data.Applied and data.Base or h.WalkSpeed
-            override(pools.Speed,h,"WalkSpeed",base+4)
+            override(pools.Speed,h,"WalkSpeed",val("WalkSpeed",20))
         elseif next(pools.Speed) then restore(pools.Speed) end
-        if on("ThirdPerson") and not on("Freecam") and not on("Spectate") then
-            local distance = val("ThirdDistance",10)
-            override(pools.Zoom,player,"CameraMode",Enum.CameraMode.Classic)
-            -- Raise the maximum first so Roblox cannot clamp the desired minimum.
-            override(pools.Zoom,player,"CameraMaxZoomDistance",math.max(distance,player.CameraMaxZoomDistance))
-            override(pools.Zoom,player,"CameraMinZoomDistance",distance)
-        elseif next(pools.Zoom) then restore(pools.Zoom) end
+        updateCombat(dt)
         if on("Fullbright") then
             override(pools.Light,Lighting,"Brightness",2)
             override(pools.Light,Lighting,"Ambient",Color3.fromRGB(180,180,180))
@@ -441,20 +765,19 @@ local success, failure = xpcall(function()
         if accumulator < 0.15 then return end
         accumulator = 0
         updateMarkers()
-        local elapsed = timer.Elapsed + (timer.Running and os.clock()-timer.At or 0)
-        local timerText = string.format("%02d:%04.1f",math.floor(elapsed/60),elapsed%60)
-        timerLabel:SetText("Timer: " .. timerText)
         local session = math.floor(os.clock()-started)
         sessionLabel:SetText(string.format("Session: %02d:%02d",math.floor(session/60),session%60))
         serverLabel:SetText(string.format("Players: %d / %d",#Players:GetPlayers(),Players.MaxPlayers))
+        targetStatus:SetText("Target: " .. (combatTarget and combatTarget.DisplayName or "none"))
         if on("HUD") then
             local speed = r and Vector3.new(r.AssemblyLinearVelocity.X,0,r.AssemblyLinearVelocity.Z).Magnitude or 0
             local pos = r and r.Position or Vector3.zero
-            text.Text = string.format("CLAUDEHUB  |  JJS v%s\nSpeed: %.1f studs/s  |  HP: %.0f\nXYZ: %.0f  %.0f  %.0f\nTimer: %s%s",VERSION,speed,h and h.Health or 0,pos.X,pos.Y,pos.Z,timerText,timer.Running and " >" or " ||")
+            local name=combatTarget and combatTarget.DisplayName or "none"
+            text.Text = string.format("CLAUDEHUB  |  JJS v%s\nSpeed: %.1f studs/s  |  HP: %.0f\nXYZ: %.0f  %.0f  %.0f\nTarget: %s",VERSION,speed,h and h.Health or 0,pos.X,pos.Y,pos.Z,name)
             clampHUD(frame.Position.X.Offset,frame.Position.Y.Offset)
         end
     end)
-    RunService:BindToRenderStep("ClaudeHubJJS_Camera", Enum.RenderPriority.Camera.Value + 1, function(dt)
+    RunService:BindToRenderStep("ClaudeHubJJS_Camera", Enum.RenderPriority.Last.Value + 100, function(dt)
         if not ready then return end
         local camera = workspace.CurrentCamera
         if cameraState and cameraState.Camera ~= camera then
@@ -467,7 +790,15 @@ local success, failure = xpcall(function()
         for object in pairs(pools.FOV) do if object ~= camera then restore(pools.FOV); break end end
         if camera and on("CustomFOV") then override(pools.FOV,camera,"FieldOfView",val("FOV",80))
         elseif next(pools.FOV) then restore(pools.FOV) end
-        if not cameraState then return end
+        if not cameraState then
+            if camera and on("AntiShake") then
+                local alpha=1-math.exp(-(100-val("Stabilize",70))*dt)
+                smoothCamera=smoothCamera and smoothCamera:Lerp(camera.CFrame,alpha) or camera.CFrame
+                camera.CFrame=smoothCamera
+            else smoothCamera=nil end
+            return
+        end
+        smoothCamera=nil
         if cameraState.Mode == "Spectate" then
             local target = playerNames[val("SpectatePlayer", "")]
             local subject
@@ -496,6 +827,7 @@ local success, failure = xpcall(function()
         end
         camera.CameraType = Enum.CameraType.Scriptable
         camera.CFrame = CFrame.new(freePosition) * rotation
+        camera.Focus = camera.CFrame * CFrame.new(0,0,-512)
     end)
     refreshPlayers()
     local function addon(path, fn)
@@ -507,7 +839,7 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","PointSlot"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","CombatPlayer","ObservedAnimation","ServerChoice","JobID","AutoBlock","AutoCounter"})
         manager:SetFolder("ClaudeHub/JJS"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
