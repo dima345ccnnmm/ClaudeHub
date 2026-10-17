@@ -1,11 +1,28 @@
-ClaudeHub JJS v0.2.0 — third-party notices
+ClaudeHub JJS v0.2.1 — third-party notices
 
-Obsidian UI Library, ThemeManager and SaveManager
+1. Auto Block
+Original author: Zorcex (credited by the original script as "Made by Zorcex").
+Repository: https://github.com/Zorcex/JJS-Script
+Original file: Auto-Blocking.lua
+Reference commit: 7efe3975d969c39e159f07db4e44669c879cda96
+Source: https://github.com/Zorcex/JJS-Script/blob/7efe3975d969c39e159f07db4e44669c879cda96/Auto-Blocking.lua
+
+Core blocking/event/rotation logic adapted for ClaudeHub's Obsidian controls,
+validation, filters and cleanup. The original Tora UI/loader and global flags
+are not incorporated. No other files from Zorcex/JJS-Script are incorporated.
+No Auto Counter implementation is claimed to come from this repository.
+
+No license was declared in the repository metadata or listed source tree at
+retrieval. The code is NOT represented as MIT, public domain or otherwise
+freely licensed by this package. Attribution alone does not grant permission
+to redistribute publicly. Obtain permission from the rights holder before
+public redistribution unless another applicable authorization exists.
+The original author's rights remain unchanged.
+
+2. Obsidian UI Library, ThemeManager and SaveManager
 Author: deividcomsono and contributors
 Source: https://github.com/deividcomsono/Obsidian
 Documentation: https://docs.mspaint.cc/obsidian
-License: MIT. Full text: Obsidian-LICENSE.txt.
-Dependencies are downloaded at runtime. JJS uses ordinary Obsidian, not ObsidianUltra.
-
-No code from Abysall or third-party JJS scripts is incorporated in this release.
-No community animation ID list is embedded or claimed verified. Defense profiles are user-configured in-game.
+License: MIT; full text in Obsidian-LICENSE.txt. This license applies to the
+Obsidian dependency, not to Zorcex's code. Dependencies load at runtime.
+JJS uses ordinary Obsidian, not ObsidianUltra.

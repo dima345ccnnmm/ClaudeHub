@@ -1,6 +1,8 @@
--- ClaudeHub JJS v0.2.0 | Ordinary Obsidian (deividcomsono, MIT).
--- Defensive input automation uses user-defined attack IDs; no game remotes or bypass.
-local VERSION = "0.2.0"
+-- ClaudeHub JJS v0.2.1 | Ordinary Obsidian (deividcomsono, MIT).
+-- Auto Block adapted from Zorcex/JJS-Script/Auto-Blocking.lua.
+-- Original author: Zorcex. Repository declares no license; see THIRD_PARTY_NOTICES.txt.
+-- https://github.com/Zorcex/JJS-Script/blob/main/Auto-Blocking.lua
+local VERSION = "0.2.1"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubJJS"
 if env[KEY] and not env[KEY].Unloaded then
@@ -13,6 +15,7 @@ local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local CAS = game:GetService("ContextActionService")
 local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
@@ -37,11 +40,11 @@ local freePosition, freePitch, freeYaw
 local freeMoving = false
 local lastJump = 0
 local combatTarget, smoothCamera, controlsState
-local attackIDs, consumed = {}, setmetatable({}, {__mode="k"})
-local defenseHeld, defenseUntil, counterUntil, nextCounter = nil, 0, 0, 0
-local counterHeld
-local inputService
-local animationScan = 0
+local blockConnections = {}
+local hookedRemotes = {}
+local blockActivated, blockDeactivated, activeBlock
+local stopAutoBlock, doBlock, hookRemote
+local lastBlockError = -math.huge
 local serverRows, serverMap, serverCursor = {}, {}, nil
 local serversBusy, teleportBusy, serverGeneration = false, false, 0
 local serverStatus, defenseStatus, targetStatus
@@ -161,35 +164,43 @@ local function startCamera(mode)
     smoothCamera = nil
     return true
 end
-local function getInputService()
-    if inputService then return inputService end
-    local ok, service = pcall(function() return game:GetService("VirtualInputManager") end)
-    if ok and service then inputService = service end
-    return inputService
-end
-local function sendKey(code, down)
-    local service = getInputService()
-    if not service then return false end
-    return pcall(function() service:SendKeyEvent(down, code, false, game) end)
+local function findBlockRemotes()
+    local path={"Knit","Knit","Services","BlockService","RE"}
+    local current=ReplicatedStorage
+    for _,name in ipairs(path) do
+        current=current:FindFirstChild(name)
+        if not current then return nil,nil,"Missing: ReplicatedStorage." .. table.concat(path,".") end
+    end
+    local activated=current:FindFirstChild("Activated")
+    local deactivated=current:FindFirstChild("Deactivated")
+    if not activated or not activated:IsA("RemoteEvent") or not deactivated or not deactivated:IsA("RemoteEvent") then
+        return nil,nil,"Missing BlockService RE.Activated / RE.Deactivated RemoteEvents"
+    end
+    return activated,deactivated
 end
 local function releaseDefense()
-    if defenseHeld then sendKey(defenseHeld, false); defenseHeld = nil end
-    if counterHeld then sendKey(counterHeld, false); counterHeld = nil end
-    defenseUntil, counterUntil = 0, 0
+    if activeBlock then
+        local state=activeBlock
+        activeBlock=nil
+        -- Use the exact remote which started the block, even if the character changed.
+        local ok,err=pcall(function() state.Release:FireServer() end)
+        if not ok and not closed and os.clock()-lastBlockError>3 then
+            lastBlockError=os.clock();notify("Block release failed: " .. tostring(err))
+        end
+    end
+    if not on("FaceTarget") then restore(pools.Facing) end
+end
+stopAutoBlock=function()
+    releaseDefense()
+    for _,c in ipairs(blockConnections) do c:Disconnect() end
+    table.clear(blockConnections)
+    table.clear(hookedRemotes)
+    blockActivated,blockDeactivated=nil,nil
 end
 local function resetCombat()
     releaseDefense()
     restore(pools.Facing)
-    combatTarget = nil
-    table.clear(consumed)
-end
-local function parseAttackIDs()
-    table.clear(attackIDs)
-    for id in tostring(val("AttackIDs", "")):gmatch("%d+") do
-        if #id >= 5 and #id <= 20 then attackIDs[id] = true end
-    end
-    table.clear(consumed)
-    releaseDefense()
+    combatTarget=nil
 end
 local function validEnemy(p, origin, maxDistance, visible)
     if p == player then return end
@@ -205,6 +216,72 @@ local function validEnemy(p, origin, maxDistance, visible)
         if hit and not hit.Instance:IsDescendantOf(c) then return end
     end
     return c,h,r,distance
+end
+-- Zorcex Auto-Blocking.lua: faceTarget, doBlock and hookRemote adapted to ClaudeHub.
+local function faceBlockTarget(targetHrp)
+    local _,hum,root=character(player)
+    if not root or not targetHrp or not targetHrp.Parent or root.Anchored or hum.Sit then return false end
+    local position=Vector3.new(targetHrp.Position.X,root.Position.Y,targetHrp.Position.Z)
+    if (position-root.Position).Magnitude<0.05 then return false end
+    override(pools.Facing,hum,"AutoRotate",false)
+    root.CFrame=CFrame.lookAt(root.Position,position)
+    return true
+end
+doBlock=function(enemyHrp)
+    if activeBlock or not ready or not on("AutoBlock") or menuBusy() or on("Freecam") or on("Spectate") then return end
+    if not blockActivated or not blockDeactivated then return end
+    if not blockActivated:IsDescendantOf(ReplicatedStorage) or not blockDeactivated:IsDescendantOf(ReplicatedStorage) then
+        Toggles.AutoBlock:SetValue(false);notify("BlockService was removed; Auto Block disabled");return
+    end
+    if not faceBlockTarget(enemyHrp) then return end
+    local ok,err=pcall(function() blockActivated:FireServer() end)
+    if not ok then
+        restore(pools.Facing)
+        Toggles.AutoBlock:SetValue(false);notify("Block activation failed: " .. tostring(err));return
+    end
+    activeBlock={Target=enemyHrp, Release=blockDeactivated, Expires=os.clock()+val("BlockHold",0.5)}
+end
+hookRemote=function(remote)
+    if not remote:IsA("RemoteEvent") or hookedRemotes[remote] then return end
+    if remote==blockActivated or remote==blockDeactivated or remote.Name:lower():find("emote") then return end
+    hookedRemotes[remote]=remote.OnClientEvent:Connect(function(...)
+        if not ready or not on("AutoBlock") or activeBlock or menuBusy() or on("Freecam") or on("Spectate") then return end
+        local myChar,_,myRoot=character(player)
+        if not myRoot then return end
+        local arguments=table.pack(...)
+        for i=1,arguments.n do
+            local arg=arguments[i]
+            if typeof(arg)~="Instance" then continue end
+            local c=arg:IsA("Model") and arg or arg:FindFirstAncestorOfClass("Model")
+            if not c or c==myChar then continue end
+            local root=c:FindFirstChild("HumanoidRootPart")
+            local humanoid=c:FindFirstChildOfClass("Humanoid")
+            if not root or not humanoid or humanoid.Health<=0 or not root:IsA("BasePart") then continue end
+            if (myRoot.Position-root.Position).Magnitude>val("DefenseRange",10) then continue end
+            local enemy=Players:GetPlayerFromCharacter(c)
+            if enemy and not validEnemy(enemy,myRoot.Position,val("DefenseRange",10),on("CombatWallCheck")) then continue end
+            if not enemy and on("CombatWallCheck") then
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={myChar,markerFolder}
+                local hit=workspace:Raycast(myRoot.Position,root.Position-myRoot.Position,params)
+                if hit and not hit.Instance:IsDescendantOf(c) then continue end
+            end
+            doBlock(root)
+            if activeBlock then return end
+        end
+    end)
+    table.insert(blockConnections,hookedRemotes[remote])
+end
+local function startAutoBlock()
+    stopAutoBlock()
+    local activated,deactivated,err=findBlockRemotes()
+    if not activated then return false,err end
+    blockActivated,blockDeactivated=activated,deactivated
+    table.insert(blockConnections,ReplicatedStorage.DescendantAdded:Connect(hookRemote))
+    -- Subscribe first; the set prevents duplicate connections if a remote arrives during the scan.
+    for _,object in ipairs(ReplicatedStorage:GetDescendants()) do hookRemote(object) end
+    return true
 end
 local function selectTarget()
     local _,_,root = character(player)
@@ -250,6 +327,7 @@ local function cleanup()
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubJJS_Camera")
     releaseCamera()
+    stopAutoBlock()
     resetCombat()
     serverGeneration += 1
     for _, pool in pairs(pools) do restore(pool) end
@@ -308,6 +386,7 @@ local success, failure = xpcall(function()
     info:AddLabel("Gameplay features start disabled")
     info:AddLabel("No anticheat bypass")
     info:AddLabel("UI: deividcomsono (MIT)")
+    info:AddLabel("Auto Block: Zorcex / JJS-Script")
     local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
     toggle(char, "Speed", "WalkSpeed", "V")
     slider(char, "WalkSpeed", "Speed", 20, 0, 120)
@@ -372,39 +451,18 @@ local success, failure = xpcall(function()
     toggle(targetBox, "CombatTeamFilter", "Hide Teammates")
     toggle(targetBox, "TargetHighlight", "Highlight Target")
     targetStatus = targetBox:AddLabel("Target: none")
-    local defense = Tabs.Combat:AddRightGroupbox("Defense", "shield")
-    toggle(defense, "AutoBlock", "Auto Block", "B")
-    toggle(defense, "AutoCounter", "Auto Counter", "C")
-    slider(defense, "DefenseRange", "Defense Range", 12, 3, 30)
-    slider(defense, "BlockHold", "Block Hold", 0.3, 0.1, 0.8, 2)
-    slider(defense, "CounterCooldown", "Counter Interval", 5, 1, 30, 1)
-    defense:AddDropdown("CounterKey", {Text="Counter Ability Key", Values={"None","One","Two","Three","Four","R"}, Default=1})
-    defense:AddInput("AttackIDs", {Text="Attack Animation IDs", Default="", Finished=true})
-    defense:AddDropdown("ObservedAnimation", {Text="Observed Attack", Values={}, AllowNull=true})
-    local function scanAnimations()
-        local p = selectTarget()
-        local _,h
-        if p then _,h = character(p) end
-        local animator = h and h:FindFirstChildOfClass("Animator")
-        if not animator then notify("Choose a live target first"); return end
-        local ids, seen = {}, {}
-        for _,track in ipairs(animator:GetPlayingAnimationTracks()) do
-            local id = track.Animation and track.Animation.AnimationId:match("%d+")
-            if id and not seen[id] then table.insert(ids,id);seen[id]=true end
-        end
-        table.sort(ids)
-        Options.ObservedAnimation:SetValues(ids)
-        Options.ObservedAnimation:SetValue(ids[1])
-        notify(#ids > 0 and "Choose the attack ID, then add it" or "No playing animations on this target")
-    end
-    action(defense, "Scan Target Animations", scanAnimations)
-    action(defense, "Add Selected Attack ID", function()
-        local id = val("ObservedAnimation", "")
-        if id == "" then notify("Scan and select an attack animation first"); return end
-        if not attackIDs[id] then Options.AttackIDs:SetValue(tostring(val("AttackIDs","")) .. " " .. id) end
+    local defense = Tabs.Combat:AddRightGroupbox("Defense | Zorcex", "shield")
+    toggle(defense,"AutoBlock","Auto Block (Zorcex)","B")
+    slider(defense,"DefenseRange","Block Distance",10,3,30)
+    slider(defense,"BlockHold","Block Duration",0.5,0.1,1,2)
+    defense:AddLabel("Auto Block author: Zorcex")
+    defense:AddLabel("Auto Counter: source not available")
+    defenseStatus=defense:AddLabel("Defense: off")
+    action(defense,"Check Block API",function()
+        local activated,_,err=findBlockRemotes()
+        defenseStatus:SetText(activated and "Block API: available" or "Block API: unavailable")
+        notify(activated and "Zorcex BlockService remotes found" or tostring(err))
     end)
-    action(defense, "Clear Attack IDs", function() Options.AttackIDs:SetValue("") end)
-    defenseStatus = defense:AddLabel("Defense: configure attack IDs")
     local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
     servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
     servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
@@ -611,29 +669,18 @@ local success, failure = xpcall(function()
     Options.SpectatePlayer:OnChanged(function()
         if ready and on("Spectate") and not startCamera("Spectate") then Toggles.Spectate:SetValue(false) end
     end)
-    Options.AttackIDs:OnChanged(parseAttackIDs)
-    Options.CounterKey:OnChanged(function()
-        releaseDefense()
-        if ready and val("CounterKey","None")=="None" and on("AutoCounter") then Toggles.AutoCounter:SetValue(false) end
+    Toggles.AutoBlock:OnChanged(function()
+        if not ready then return end
+        if not on("AutoBlock") then
+            stopAutoBlock();defenseStatus:SetText("Defense: off");return
+        end
+        local ok,err=startAutoBlock()
+        if not ok then
+            Toggles.AutoBlock:SetValue(false)
+            defenseStatus:SetText("Block API: unavailable")
+            notify("Auto Block unavailable: " .. tostring(err))
+        else defenseStatus:SetText("Defense: listening (Zorcex)") end
     end)
-    Options.CounterCooldown:OnChanged(function() nextCounter = os.clock() + val("CounterCooldown",5); releaseDefense() end)
-    for _,id in ipairs({"AutoBlock","AutoCounter"}) do
-        local name=id
-        Toggles[name]:OnChanged(function()
-            releaseDefense()
-            if not ready or not on(name) then return end
-            parseAttackIDs()
-            if not next(attackIDs) then
-                Toggles[name]:SetValue(false);notify("Add the enemy's attack animation IDs first");return
-            end
-            if name=="AutoCounter" and val("CounterKey","None")=="None" then
-                Toggles[name]:SetValue(false);notify("Choose your counter ability key first");return
-            end
-            if not getInputService() then
-                Toggles[name]:SetValue(false);notify("This environment does not support defensive key input")
-            end
-        end)
-    end
     Toggles.FaceTarget:OnChanged(function() if not on("FaceTarget") then restore(pools.Facing) end end)
     Toggles.AntiShake:OnChanged(function() smoothCamera=nil end)
     for id, poolName in pairs({Speed="Speed", CustomFOV="FOV"}) do
@@ -659,6 +706,7 @@ local success, failure = xpcall(function()
         end
         task.defer(function() if ready and not closed then refreshPlayers() end end)
     end)
+    connect(player.CharacterRemoving,function() resetCombat() end)
     connect(player.CharacterAdded, function()
         if not ready then return end
         Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
@@ -676,70 +724,31 @@ local success, failure = xpcall(function()
         end
         local _,hum,root=character(player)
         if not root then resetCombat();targetMarker.Enabled=false;return end
-        local active=on("FaceTarget") or on("AutoBlock") or on("AutoCounter") or on("TargetHighlight") or on("HUD")
+        local active=on("FaceTarget") or on("AutoBlock") or on("TargetHighlight") or on("HUD")
         if not active then resetCombat();targetMarker.Enabled=false;return end
         combatTarget=selectTarget()
         local tc,_,tr
         if combatTarget then tc,_,tr=character(combatTarget) end
         for object in pairs(pools.Facing) do if object~=hum then restore(pools.Facing);break end end
-        if tr and on("FaceTarget") and not root.Anchored and not hum.Sit then
+        if activeBlock then
+            if os.clock()>=activeBlock.Expires or not activeBlock.Target.Parent then releaseDefense()
+            elseif not faceBlockTarget(activeBlock.Target) then releaseDefense() end
+        end
+        if tr and on("FaceTarget") and not activeBlock and not root.Anchored and not hum.Sit then
             override(pools.Facing,hum,"AutoRotate",false)
             local aim=tr.Position+tr.AssemblyLinearVelocity*val("Prediction",0)
             local flat=Vector3.new(aim.X,root.Position.Y,aim.Z)
             if (flat-root.Position).Magnitude>0.05 then
                 root.CFrame=root.CFrame:Lerp(CFrame.lookAt(root.Position,flat),1-math.exp(-val("TurnSpeed",25)*dt))
             end
-        elseif next(pools.Facing) then restore(pools.Facing) end
+        elseif not activeBlock and next(pools.Facing) then restore(pools.Facing) end
         targetMarker.Adornee=tc
         targetMarker.Enabled=tc~=nil and on("TargetHighlight")
-        local now=os.clock()
-        if counterHeld and now>=counterUntil then sendKey(counterHeld,false);counterHeld=nil end
-        if defenseHeld and now>=defenseUntil then sendKey(defenseHeld,false);defenseHeld=nil end
-        if not on("AutoBlock") and not on("AutoCounter") then
-            releaseDefense();defenseStatus:SetText("Defense: off");return
-        end
-        if not next(attackIDs) then releaseDefense();defenseStatus:SetText("Defense: no attack IDs");return end
-        animationScan+=dt
-        if animationScan<0.04 then return end
-        animationScan=0
-        local threat,unhandled
-        local playing={}
-        for _,p in ipairs(Players:GetPlayers()) do
-            local _,h,r=validEnemy(p,root.Position,val("DefenseRange",12),on("CombatWallCheck"))
-            if not r then continue end
-            local toward=root.Position-r.Position
-            if toward.Magnitude<0.1 or r.CFrame.LookVector:Dot(toward.Unit)<0.25 then continue end
-            local animator=h:FindFirstChildOfClass("Animator")
-            if not animator then continue end
-            for _,track in ipairs(animator:GetPlayingAnimationTracks()) do
-                local id=track.Animation and track.Animation.AnimationId:match("%d+")
-                if id and attackIDs[id] and track.IsPlaying and not track.Looped then
-                    playing[track]=true
-                    local data=consumed[track]
-                    if data and track.TimePosition+0.02<data.Position then consumed[track]=nil;data=nil end
-                    if data then data.Position=track.TimePosition elseif not unhandled then unhandled=track end
-                    threat=threat or track
-                end
-            end
-        end
-        for track in pairs(consumed) do if not playing[track] then consumed[track]=nil end end
-        if unhandled and on("AutoCounter") and not counterHeld and now>=nextCounter and val("CounterKey","None")~="None" then
-            if defenseHeld then sendKey(defenseHeld,false);defenseHeld=nil end
-            local code=Enum.KeyCode[val("CounterKey","None")]
-            if sendKey(code,true) then
-                counterHeld=code;counterUntil=now+0.07;nextCounter=now+val("CounterCooldown",5)
-                consumed[unhandled]={Position=unhandled.TimePosition}
-            else
-                Toggles.AutoCounter:SetValue(false);notify("Counter key input failed")
-            end
-        elseif threat and on("AutoBlock") and not counterHeld and (defenseHeld or not UIS:IsKeyDown(Enum.KeyCode.F)) then
-            if not defenseHeld then
-                if sendKey(Enum.KeyCode.F,true) then defenseHeld=Enum.KeyCode.F
-                else Toggles.AutoBlock:SetValue(false);notify("Block key input failed") end
-            end
-            if defenseHeld then defenseUntil=now+val("BlockHold",0.3) end
-        end
-        defenseStatus:SetText(counterHeld and "Defense: counter" or defenseHeld and "Defense: blocking" or "Defense: waiting for attack")
+        if on("AutoBlock") and blockActivated then
+            if not blockActivated:IsDescendantOf(ReplicatedStorage) or not blockDeactivated:IsDescendantOf(ReplicatedStorage) then
+                Toggles.AutoBlock:SetValue(false);notify("BlockService disappeared; Auto Block disabled")
+            else defenseStatus:SetText(activeBlock and "Defense: blocking (Zorcex)" or "Defense: listening (Zorcex)") end
+        elseif not on("AutoBlock") then defenseStatus:SetText("Defense: off") end
     end
     local accumulator = 0
     connect(RunService.Heartbeat, function(dt)
@@ -839,7 +848,7 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","CombatPlayer","ObservedAnimation","ServerChoice","JobID","AutoBlock","AutoCounter"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","CombatPlayer","ServerChoice","JobID","AutoBlock"})
         manager:SetFolder("ClaudeHub/JJS"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
