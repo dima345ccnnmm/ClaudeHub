@@ -1,6 +1,8 @@
 # ClaudeHub
-made by [claude](https://claude.ai) 
+ 
 Roblox client scripts built with [ObsidianUltra](https://github.com/joustingmatch/ObsidianUltra).
+
+made by [claude](https://claude.ai)
 
 ## Loader
 
