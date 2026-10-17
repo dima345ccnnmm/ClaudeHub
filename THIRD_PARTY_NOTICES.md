@@ -1,43 +1,46 @@
-# Third-party notices — ClaudeHub DOORS v0.4.3
+# Third-party notices — ClaudeHub DOORS v0.4.4
 
 ## Abysall
 
-Original author: **FireBacon (bocaj111004)**  
-Source: https://github.com/bocaj111004/Abysall  
-Earlier reviewed revision: `66d4192d00d9b824a304b654bc2d2eb89c3b372b`  
-Additional reference: user-supplied `Main.luau`, `Lobby.luau`, `Loader.luau` and screenshots. The uploaded files are not asserted to match that Git revision.
+Original author: **FireBacon (bocaj111004)**
+Source: https://github.com/bocaj111004/Abysall
+Reference used for this release: user-supplied Main.luau (195949 bytes), Lobby.luau,
+Loader.luau and screenshots. The earlier reviewed repository revision was
+66d4192d00d9b824a304b654bc2d2eb89c3b372b; uploaded files are not asserted to match it.
 
-Adapted portions include entity/objective/item/hiding/chest aliases; entity registration and highlight preparation; UI grouping and feature-control patterns; camera and visual-effect adapters; local hazard/audio switches; interaction, character, library-code, padlock, anchor, breaker and hiding automation patterns; notification filters and styles.
+The full AutoInteractBlacklist, TriggerPrompt, TriggerDebounce and AutoInteract Heartbeat block
+is copied verbatim from that Main.luau, not rewritten into ClaudeHub's previous interaction worker.
+Exact copied block SHA256: a4752443af4bc72e1016141bb2b68460376441631fc3839653f5d9b157a20bfa.
 
-ClaudeHub keeps its own bounded BillboardGui/Highlight renderer, notification layouts and lifecycle. Abysall/Doors/STX notification styles are local visual recreations; no notification component or upstream root loader is downloaded/executed. The original source analytics, health-kill handlers and persistent anti-cheat hooks are not included. FireBacon's MIT copyright is retained here and in Doors.luau.
+Functions.FirePrompt / ForceFirePrompt and the camera-anchor fallback are also included from the
+source. Lifecycle instrumentation stores a worker handle and temporary prompt state for unload
+cancellation/restoration. ClaudeHub supplies local dependency/control mappings, prompt registration,
+source-style ParentRoom metadata, current character/camera/inventory context and ready/alive guards.
+The source's 1/60 interval, item/lock/durability filters, LongPushPrompt/BigPropPrompt exceptions,
+per-prompt fallback queue and hold/visibility retries are retained. Removed Instant Prompts, Fast
+Interact, Prompt Clip and reach-multiplier controls are not reintroduced by this port. Temporary
+fallback changes are internal to one interaction and restored afterwards, as in the source.
 
-Door ESP targets leaf parts only, never the wall-containing parent. ESP supports at most 240 labels/tracers and 24 active Highlights. New gameplay features are opt-in. Fast Interact and Auto Interact share one worker; optional reach/clip overrides are separate, explicit settings. Auto Closet respects occupancy, prompt reach/line-of-sight and never automatically exits when a threat disappears.
+Other adapted portions include entity/objective/item/hiding/chest aliases, entity highlighting,
+UI grouping, camera/effect controls, character/library/padlock/anchor/breaker/hiding workflows,
+notification filters and standalone lobby elevator/achievement/code-request patterns.
+The old Exploits tab and all of its hazard-bypass, module-removal and audio-removal handlers are
+removed in this release. No source root loader, analytics, anti-cheat hooks or infinite-item module
+is executed. MIT authorship/license are retained in this file and Doors.luau.
 
-Selected game remotes are used only after explicit user action/feature enable: public chat notifications, known-code padlock/anchor, breaker instructions, hiding exit, door opening, Play Again, Lobby and Revive. Revive is double-click confirmed and may consume the user's revive; no purchase API is invoked.
+ClaudeHub keeps its bounded BillboardGui/Highlight renderer and TweenService notification layouts.
+Abysall/Doors/STX styles are local layouts; native achievement UI and external STX scripts are not loaded.
+Auto Closet uses an explicit Rush/Ambush/Blitz/A-60/A-120/variant allowlist, respects nearby empty-spot
+metadata and does not auto-exit. Legit Speed Boost is a name for a fixed +4 local adjustment, not an
+anti-cheat-safety guarantee. Server/game/executor compatibility is not guaranteed.
 
-Not ported: Anticheat Bypass, Velocity Manipulation, Position/Crouch Spoof, Infinite Items, No Damage hooks, Eyes/Lookman remote spoof, Auto Heartbeat and random-code guessing. These have no pretend-enabled placeholder toggles. Client-local hazard and visual suppression are NOT server-side invulnerability; cached modules or server checks can defeat them.
+## UI dependency
 
-Compile and deterministic local mock checks passed. This is not a live Roblox/DOORS/executor test. Archives/Stairwell-specific compatibility is not claimed. Unknown layouts and unavailable game adapters are skipped or reported instead of waiting forever for old object paths.
+ObsidianUltra: https://github.com/joustingmatch/ObsidianUltra
+Original Obsidian documentation: https://docs.mspaint.cc/obsidian
+ClaudeHub does not claim authorship of the external UI library.
 
-## v0.4.1 additions
-
-A standalone DoorsLobby.luau adapts the supplied Lobby.luau's elevator join/creation,
-quick-play, unlocked-achievement and code-request patterns. It does not execute Abysall's root loader
-or analytics, does not load run-only camera/ESP adapters, and does not promise access to locked destinations.
-Old sample codes may be expired. Revive/server-damage bypasses are not present in the lobby module.
-
-Third-person now supports DOORS Scriptable cameras, uses a late render binding, and restores owned
-avatar transparency and camera offset. Strict Dupe mode requires a Hidden BasePart with a replicated
-TouchTransmitter; unknown shapes are omitted rather than labeled from a decorative name alone.
-Compatibility mode is optional and less precise. Loader v1.1 routes lobby Place ID 6516141723 to
-DoorsLobby.luau, DOORS run places to Doors.luau, other universes to the unchanged ClaudeHub.luau.
-Direct execution of Doors.luau in the lobby delegates to DoorsLobby.luau too.
-
-## UI
-
-ObsidianUltra: https://github.com/joustingmatch/ObsidianUltra  
-Original Obsidian documentation: https://docs.mspaint.cc/obsidian  
-The existing external UI dependency remains unchanged; ClaudeHub does not claim authorship of that library.
+## Abysall license
 
 MIT License
 
@@ -60,17 +63,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-## v0.4.2 local changes
-
-Whole-rig Seek/Screech/Eyes identity, current-room ESP lifecycle, separate Auto Interact filters, model-pivot/furniture LOS handling and notification card layouts are ClaudeHub adaptations of the supplied reference patterns. Global unowned threats remain visible across room changes. Native DOORS achievement UI is not cloned.
-
-## v0.4.3 copied interaction routines
-
-TriggerPrompt filter logic was copied from the user-supplied Abysall Main.luau, with local control/dependency
-names and optional UI guards adapted. The fallback follows that source's temporary camera-adjacent prompt
-reparenting, hold-input and field-restoration technique; ClaudeHub adds bounded, cancellable lifecycle and
-room/range checks. Auto Interact scans all eligible prompts at 1/60 s; the previous unrelated distance cap is
-removed. Reach uses source-style base-distance multiplication with immediate callbacks and extra current-room
-scoping. Notification animation uses TweenService rather than 5Hz manual interpolation. Full original MIT
-copyright remains in this file and Doors.luau. No source analytics or external root loader is executed.

@@ -1,48 +1,30 @@
-# ClaudeHub DOORS v0.4.3
+# ClaudeHub DOORS v0.4.4
 
-## Interaction port
-
-- Copied TriggerPrompt's blacklist, inventory/durability, consumable, lock, shop, dropped-item,
-  currency, minecart and closed-drawer filters from the user-supplied Abysall Main.luau (MIT).
-  Dependencies are renamed to ClaudeHub controls, optional UI paths are guarded, and ancestor
-  checks additionally support prompts attached to Handle/Attachment descendants.
-- Auto Interact now scans all enabled eligible nearby prompts using each prompt's own
-  MaxActivationDistance, as the reference does. Removed the unrelated 8-stud cap and nearest-only
-  arbitration. Activation cadence is 1/60 s with per-prompt cooldown / duplicate queue prevention.
-- Native fireproximityprompt is used when available. Otherwise the source's camera-anchor
-  technique is ported: temporarily move the selected prompt onto a tiny local camera-adjacent
-  part, wait for visibility / bounded retry, InputHoldBegin + InputHoldEnd, then restore its parent,
-  enabled state, distance, hold time and line of sight. Original 99999 fallback distance is only
-  temporary after the original distance/room/Enabled checks. No game remotes are invented.
-- Fallback is cancellable on menu/text/focus/room/feature change, bounded by a timeout, and
-  restored on unload/errors. Native API failure falls back too. No analytics/root loader executed.
-- Fast Interact is activated by its checkbox OR inline F key, rather than requiring both together.
-  Auto Interact is checkbox OR R. Both use the same source-derived firing backend and queue.
-- Reach updates immediately on setting changes and prompt registration. Base distance does not
-  compound. Game-authored distance changes are tracked. Multiplier range is 1..2 like the source.
-  Only the current room gets extended reach; while multiplier >1, other-room prompts are temporarily
-  disabled, restored on room entry or multiplier reset. CurrentRoom is the local player's attribute.
-  Missing room metadata remains a limitation. Prompt Clip and Instant Prompts are separate controls.
-
-## Notifications and UI
-
-- Replaced 5Hz manual position/progress interpolation with TweenService, following Abysall's
-  native-tween approach. Layout tweens run only on stack changes; lifetime tweens run once per card.
-  Closing, expiry, replacement and unload cancel owned tweens. Styles remain local layouts;
-  native achievement widgets and third-party STX notification loaders are not loaded.
-- Abysall layout matches the source's 420x50 dimensions, .4 background transparency and compact
-  icon/title/body arrangement. Doors and STX retain their separate locally recreated layouts.
-- Removed explanatory UI paragraphs below controls. Functional status labels, Home author credit
-  and the complete source MIT license remain. Settings folder is configs-v043; no automatic config load.
-- Retained v0.4.2 whole-rig entity classification/current-room ESP and earlier camera/Dupe fixes.
+- Removed Fast Interact, Instant Prompts, Prompt Clip, Prompt Reach Multiplier and their old controls/handlers.
+- Removed the entire Exploits tab, including hazard bypasses, future module-removal switches, audio-removal
+  controls and their background scanning/mutation handlers. Character/Visuals controls outside that tab remain.
+- Renamed Speed Boost to Legit Speed Boost. Removed the adjustable slider; boost is always base WalkSpeed +4,
+  without compounding. Turning it off/unloading restores the current game-owned baseline.
+- Removed explanatory UI paragraphs beneath controls and the empty Read First panel. Home author/license
+  information and functional status labels remain.
+- Auto Closet accepts only Rush, Ambush, Blitz, A-60, A-120, Frozen Ambush, GlitchRush and GlitchAmbush aliases.
+  Eyes, Seek, Screech, Lookman, Jeff, Sally, Monument and Gloombat Swarm do not trigger it. Its ignore list
+  includes only allowed Rush-like labels. Empty-spot, prompt reach/LOS and current-room checks remain.
+- Auto Interact fully uses the supplied Abysall source's blacklist, TriggerPrompt function, debounce and
+  Heartbeat loop. These blocks are byte-for-byte source matches, using local dependency/control mappings.
+  Source FirePrompt/ForceFirePrompt fallback queue and visibility/hold retries are included with unload
+  instrumentation. The previous ClaudeHub interaction worker, extra filters, range cap and cooldown logic
+  are removed. Source-style ParentRoom preparation is retained/restored, so the copied room filter works.
+- Native Auto Interact therefore follows the original behavior, including no extra ClaudeHub menu/focus gate,
+  no native-call error-to-fallback substitution, and the source's disabled LongPushPrompt/BigPropPrompt exceptions.
+  These are intentional consequences of the requested full copy, not additional overrides.
+- Preserved room-based ESP, entity identity, Scriptable Third Person and TweenService notification animation.
+- Config folder changed to configs-v044; no automatic saved-config loading.
 - Loader v1.1.0 and standalone lobby v0.4.1 are unchanged.
 
-## Validation
-
-All three scripts compile. Local deterministic tests pass for the existing run/ESP/camera/lifecycle
-features, source filters, all-nearby interaction beyond 8 studs, F activation, native success/error/nil
-API fallback, fallback hold events/restoration/timeouts/menu/focus/room/unload, immediate/scoped and
-noncompounding reach, TweenService creation/cancellation without 5Hz restarts, lobby and loader.
-Tween mock records parameters/endpoints; it does not prove actual animation smoothness.
-No live Roblox/DOORS/executor test has been performed. Server/game/executor differences may still
-prevent an interaction; a successful client-side request is not proof of a server-side result.
+Validation: all three scripts compile. Deterministic tests pass for removed UI/handler absence,
+fixed +4/noncompounding/external-baseline/restore, full source native interactions and ignore filters,
+ParentRoom preparation, source LongPush exception, original fallback visibility/hold/restore,
+pending fallback unload/thread cleanup, allowed/disallowed Auto Closet entity lists, retained ESP,
+TweenService lifecycle, standalone lobby and loader routing/errors. The copied source block is checked
+by exact string comparison and SHA256. These are local mocks, NOT a live Roblox/DOORS/executor test.
