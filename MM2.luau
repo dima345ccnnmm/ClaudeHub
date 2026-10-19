@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.0 | Ordinary Obsidian (deividcomsono, MIT).
--- Client-side features; no hidden-role remote calls, silent aim or damage hooks.
-local VERSION = "0.1.0"
+-- ClaudeHub MM2 v0.1.1 | Ordinary Obsidian (deividcomsono, MIT).
+-- Ordinary Obsidian. Optional role-data queries and gun-only shot redirection.
+local VERSION = "0.1.1"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -82,7 +82,7 @@ local function override(pool, object, name, value)
     data.Applied = value
     if object[name] ~= value then object[name] = value end
 end
-for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light"}) do pools[name] = {} end
+for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light", "Fly", "Noclip"}) do pools[name] = {} end
 local function clearMarker(p)
     local m = markers[p]
     if m then m.Highlight:Destroy(); m.Gui:Destroy(); markers[p] = nil end
@@ -158,8 +158,76 @@ local function startCamera(mode)
     smoothCamera = nil
     return true
 end
--- Client-observed tool hints, not hidden server roles.
-local roleColors={Knife=Color3.fromRGB(255,90,100),Gun=Color3.fromRGB(80,165,255),Unknown=Color3.fromRGB(190,190,205),Conflict=Color3.fromRGB(245,190,60)}
+local roleColors={Knife=Color3.fromRGB(255,90,100),Gun=Color3.fromRGB(80,165,255),Innocent=Color3.fromRGB(80,225,120),Unknown=Color3.fromRGB(175,175,185)}
+local roles,rolesAt,rolesBusy,rolesGeneration={},-math.huge,false,0
+local roundSignal=nil
+local roundConnections={}
+local function clearRoles(state)
+    roundSignal=state;roles={};rolesAt=-math.huge;rolesGeneration+=1
+end
+local function booleanFlag(object,names)
+    if not object then return nil end
+    for _,name in ipairs(names) do
+        local value=object:GetAttribute(name)
+        if type(value)=="boolean" then return value end
+        local child=object:FindFirstChild(name)
+        if child and child:IsA("BoolValue") then return child.Value end
+    end
+    return nil
+end
+local function inRound(p)
+    local mode=val("RoundDetection","Auto")
+    if mode=="Lobby (force gray)" then return false end
+    if mode=="In round (manual)" then return true end
+    if roundSignal==false then return false end
+    local lobby=booleanFlag(p,{"InLobby"})
+    if lobby==nil then lobby=booleanFlag(p.Character,{"InLobby"}) end
+    if lobby==true then return false end
+    local personal=booleanFlag(p,{"InRound","InGame"})
+    if personal==nil then personal=booleanFlag(p.Character,{"InRound","InGame"}) end
+    if personal~=nil then return personal end
+    local active=booleanFlag(ReplicatedStorage,{"RoundActive","RoundInProgress"})
+    if active==nil then active=booleanFlag(workspace,{"RoundActive","RoundInProgress"}) end
+    if active~=nil then return active end
+    return roundSignal==true
+end
+local function acceptRoles(data)
+    if type(data)~="table" then return end
+    local fresh={}
+    for id,row in pairs(data) do
+        if type(row)=="table" and type(row.Role)=="string" then
+            fresh[tostring(id)]={Role=row.Role,Dead=row.Dead==true,Killed=row.Killed==true}
+        end
+    end
+    roles=fresh;rolesAt=os.clock()
+end
+local function bindRoundRemote(object)
+    if not object:IsA("RemoteEvent") or not object:IsDescendantOf(ReplicatedStorage) or roundConnections[object] then return end
+    local name=object.Name
+    if name=="RoundStart" or name=="RoundStarted" then
+        roundConnections[object]=connect(object.OnClientEvent,function() clearRoles(true) end)
+    elseif name=="RoundEnd" or name=="RoundEnded" then
+        roundConnections[object]=connect(object.OnClientEvent,function() clearRoles(false) end)
+    elseif name=="UpdatePlayerData" then
+        roundConnections[object]=connect(object.OnClientEvent,function(data) acceptRoles(data) end)
+    end
+end
+local rolePollAt=-math.huge
+local function pollRoles()
+    if rolesBusy or os.clock()-rolePollAt<2 then return end
+    if not (on("ESP") or on("AimAssist") or on("SilentAim")) then return end
+    rolePollAt=os.clock()
+    local remote=ReplicatedStorage:FindFirstChild("GetPlayerData",true)
+    if not remote or not remote:IsA("RemoteFunction") then return end
+    rolesBusy=true
+    local generation=rolesGeneration
+    task.spawn(function()
+        local ok,data=pcall(function() return remote:InvokeServer() end)
+        rolesBusy=false
+        if closed or not ready or generation~=rolesGeneration then return end
+        if ok then acceptRoles(data) end
+    end)
+end
 local function toolsIn(container)
     local knife,gun=false,false
     if container then for _,tool in ipairs(container:GetChildren()) do
@@ -171,13 +239,21 @@ local function toolsIn(container)
     return knife,gun
 end
 local function roleHint(p)
+    if not inRound(p) then return "Unknown","Lobby / unconfirmed",roleColors.Unknown end
+    local row=os.clock()-rolesAt<=6 and (roles[p.Name] or roles[tostring(p.UserId)])
+    if row and (row.Dead or row.Killed) then return "Unknown","Eliminated",roleColors.Unknown end
+    if row then
+        if row.Role=="Murderer" then return "Knife","Murderer",roleColors.Knife end
+        if row.Role=="Sheriff" or row.Role=="Hero" then return "Gun",row.Role,roleColors.Gun end
+        if row.Role=="Innocent" then return "Innocent","Innocent",roleColors.Innocent end
+    end
     local knife,gun=toolsIn(p.Character)
     local k,g=toolsIn(p:FindFirstChildOfClass("Backpack"));knife,gun=knife or k,gun or g
-    if knife and gun then return "Conflict","Tools conflict",roleColors.Conflict end
-    if knife then return "Knife","Knife seen",roleColors.Knife end
-    if gun then return "Gun","Gun seen",roleColors.Gun end
+    if knife and not gun then return "Knife","Knife seen",roleColors.Knife end
+    if gun and not knife then return "Gun","Gun seen",roleColors.Gun end
     return "Unknown","Unknown",roleColors.Unknown
 end
+
 local function observedAttribute(keys)
     for _,object in ipairs({workspace,ReplicatedStorage}) do for _,name in ipairs(keys) do
         local value=object:GetAttribute(name)
@@ -186,7 +262,7 @@ local function observedAttribute(keys)
 end
 local function roundInfo()
     local map=observedAttribute({"MapName","CurrentMap"}) or "not exposed"
-    local status=observedAttribute({"RoundState","RoundStatus"}) or "not exposed"
+    local status=observedAttribute({"RoundState","RoundStatus"}) or (inRound(player) and "In round" or "Lobby / unconfirmed")
     return map,status
 end
 local gunObjects={}
@@ -254,29 +330,30 @@ end
 local function equippedWeapon()
     local k,g=toolsIn(player.Character);return k or g
 end
-local function aimCandidate(p,camera,radiusMultiplier)
+local function aimCandidate(p,camera,radiusMultiplier,settingsPrefix)
+    local prefix=settingsPrefix or "Aim"
     if p==player then return end
     local _,_,myRoot=character(player)
     local c,h,root=character(p)
     if not c or not myRoot then return end
-    if (root.Position-myRoot.Position).Magnitude>val("AimRange",180) then return end
-    local filter=val("AimRole","Any visible player")
+    if (root.Position-myRoot.Position).Magnitude>val(prefix.."Range",180) then return end
+    local filter=val(prefix.."Role","Any visible player")
     local hint=roleHint(p)
-    if filter=="Knife seen" and hint~="Knife" then return end
-    if filter=="Gun seen" and hint~="Gun" then return end
-    local choice=val("AimPoint","UpperTorso")
+    if (filter=="Knife seen" or filter=="Murderer") and hint~="Knife" then return end
+    if (filter=="Gun seen" or filter=="Sheriff / Hero") and hint~="Gun" then return end
+    local choice=val(prefix.."Point","UpperTorso")
     local part
     if choice=="Head" then part=c:FindFirstChild("Head") or root
     elseif choice=="HumanoidRootPart" then part=root
     else part=c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or root end
     if not part:IsA("BasePart") then return end
-    local point=part.Position+root.AssemblyLinearVelocity*val("AimPrediction",0)
+    local point=part.Position+root.AssemblyLinearVelocity*val(prefix.."Prediction",0)
     local screen,visible=camera:WorldToViewportPoint(point)
     if not visible or screen.Z<=0 then return end
     local center=camera.ViewportSize/2
     local delta=Vector2.new(screen.X-center.X,screen.Y-center.Y)
     local pixels=delta.Magnitude
-    if pixels>val("AimRadius",110)*(radiusMultiplier or 1) then return end
+    if pixels>val(prefix.."Radius",110)*(radiusMultiplier or 1) then return end
     local offset=point-camera.CFrame.Position
     if offset.Magnitude<0.05 then return end
     local ray=RaycastParams.new();ray.FilterType=Enum.RaycastFilterType.Exclude
@@ -298,8 +375,135 @@ local function chooseAimTarget(camera)
     return selected,point,model
 end
 
+local flight
+local function stopFly()
+    if flight then
+        local state=flight;flight=nil
+        for _,object in pairs({state.Velocity,state.Orientation,state.Attachment}) do pcall(function() object:Destroy() end) end
+        pcall(function()
+            if state.Root.Parent then state.Root.AssemblyLinearVelocity=Vector3.zero;state.Root.AssemblyAngularVelocity=Vector3.zero end
+        end)
+    end
+    restore(pools.Fly)
+end
+local function startFly()
+    stopFly()
+    local _,h,r=character(player)
+    if not h or r.Anchored or h.Sit then return false end
+    local attachment=Instance.new("Attachment",r);attachment.Name="ClaudeHubFlightAttachment"
+    flight={Root=r,Humanoid=h,Attachment=attachment}
+    local velocity=Instance.new("LinearVelocity",r);flight.Velocity=velocity
+    velocity.Name="ClaudeHubFlightVelocity";velocity.Attachment0=attachment
+    velocity.RelativeTo=Enum.ActuatorRelativeTo.World;velocity.VelocityConstraintMode=Enum.VelocityConstraintMode.Vector
+    velocity.ForceLimitsEnabled=false;velocity.MaxForce=math.huge;velocity.VectorVelocity=Vector3.zero
+    local orientation=Instance.new("AlignOrientation",r);flight.Orientation=orientation
+    orientation.Name="ClaudeHubFlightOrientation";orientation.Mode=Enum.OrientationAlignmentMode.OneAttachment
+    orientation.Attachment0=attachment;orientation.MaxTorque=math.huge;orientation.Responsiveness=25
+    orientation.CFrame=r.CFrame.Rotation
+    override(pools.Fly,h,"AutoRotate",false);override(pools.Fly,h,"PlatformStand",true)
+    return true
+end
+local function updateMovement()
+    if not ready then return end
+    local c,h,r=character(player)
+    if flight then
+        if not on("Fly") or not r or flight.Root~=r or r.Anchored or h.Sit or on("Freecam") or on("Spectate") then
+            stopFly();if on("Fly") then Toggles.Fly:SetValue(false) end
+        else
+            override(pools.Fly,h,"AutoRotate",false);override(pools.Fly,h,"PlatformStand",true)
+            local camera=workspace.CurrentCamera
+            local movement=Vector3.zero
+            if camera and not menuBusy() then
+                local function key(code) return UIS:IsKeyDown(code) and 1 or 0 end
+                local x=key(Enum.KeyCode.D)-key(Enum.KeyCode.A)
+                local z=key(Enum.KeyCode.W)-key(Enum.KeyCode.S)
+                local up=key(Enum.KeyCode.Space)+key(Enum.KeyCode.E)-key(Enum.KeyCode.LeftControl)-key(Enum.KeyCode.Q)
+                local direction=h.MoveDirection
+                if x~=0 or z~=0 then
+                    local forward=Vector3.new(camera.CFrame.LookVector.X,0,camera.CFrame.LookVector.Z)
+                    local right=Vector3.new(camera.CFrame.RightVector.X,0,camera.CFrame.RightVector.Z)
+                    if forward.Magnitude>0.001 then forward=forward.Unit end
+                    if right.Magnitude>0.001 then right=right.Unit end
+                    direction=forward*z+right*x
+                end
+                movement=direction+Vector3.new(0,up,0)
+                if movement.Magnitude>1 then movement=movement.Unit end
+                local facing=camera.CFrame.LookVector
+                local flat=Vector3.new(facing.X,0,facing.Z)
+                if flat.Magnitude>0.001 then flight.Orientation.CFrame=CFrame.lookAt(Vector3.zero,flat) end
+            end
+            flight.Velocity.VectorVelocity=movement*val("FlySpeed",45)
+        end
+    end
+    if on("Noclip") and c then
+        for object in pairs(pools.Noclip) do if not object:IsDescendantOf(c) then restore(pools.Noclip);break end end
+        for _,part in ipairs(c:GetDescendants()) do
+            if part:IsA("BasePart") and (part.CanCollide or pools.Noclip[part]) then override(pools.Noclip,part,"CanCollide",false) end
+        end
+    elseif next(pools.Noclip) then restore(pools.Noclip) end
+end
+
+local silentState
+local silentStatus
+local function stopSilent()
+    if silentState then silentState.Resolve=nil end
+end
+local function silentPoint(remote,method,args)
+    if closed or not ready or not on("SilentAim") or menuBusy() or cameraState then return end
+    if method~="InvokeServer" or args[1]~=1 or typeof(args[2])~="Vector3" then return end
+    local c,_,root=character(player)
+    local gun=c and c:FindFirstChild("Gun")
+    if not gun or not gun:IsA("Tool") or not remote:IsDescendantOf(gun) then return end
+    if remote.Name~="RemoteFunction" or not remote.Parent or remote.Parent.Name~="CreateBeam" then return end
+    if not remote:IsA("RemoteFunction") then return end
+    local camera=workspace.CurrentCamera
+    if not camera or camera.CameraType==Enum.CameraType.Scriptable then return end
+    local subject=camera.CameraSubject
+    if not subject or not (subject==c or subject:IsDescendantOf(c)) then return end
+    local selected,point,model,best
+    for _,p in ipairs(Players:GetPlayers()) do
+        local at,pixels,body=aimCandidate(p,camera,1,"Silent")
+        if at and (not best or pixels<best) then selected,point,model,best=p,at,body,pixels end
+    end
+    if not point then return end
+    local handle=gun:FindFirstChild("Handle")
+    local origin=handle and handle:IsA("BasePart") and handle.Position or root.Position
+    local ray=RaycastParams.new();ray.FilterType=Enum.RaycastFilterType.Exclude
+    ray.FilterDescendantsInstances={c,markerFolder};ray.IgnoreWater=true
+    local hit=workspace:Raycast(origin,point-origin,ray)
+    if hit and not hit.Instance:IsDescendantOf(model) then return end
+    return point
+end
+local function startSilent()
+    if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" then
+        return false,"hookmetamethod / getnamecallmethod unavailable"
+    end
+    local state=env.__ClaudeHubMM2SilentHook
+    if not state or not state.Installed then
+        state={}
+        local previous
+        local methodName=getnamecallmethod
+        local isCaller=type(checkcaller)=="function" and checkcaller or nil
+        local function intercept(self,...)
+            local args=table.pack(...)
+            local resolver=state.Resolve
+            if resolver and methodName()=="InvokeServer" and (not isCaller or not isCaller()) then
+                local ok,point=pcall(resolver,self,methodName(),args)
+                if ok and point then args[2]=point end
+            end
+            return previous(self,table.unpack(args,1,args.n))
+        end
+        local wrap=type(newcclosure)=="function" and newcclosure or function(fn) return fn end
+        local ok,old=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
+        if not ok or type(old)~="function" then return false,tostring(old) end
+        previous=old;state.Installed=true;env.__ClaudeHubMM2SilentHook=state
+    end
+    silentState=state;state.Resolve=silentPoint
+    return true
+end
+
 local function jumpNow()
-    if not ready or not on("InfiniteJump") or on("Freecam") or not focused or UIS:GetFocusedTextBox() or os.clock()-lastJump < 0.12 then return end
+    if not ready or not on("InfiniteJump") or on("Freecam") or on("Fly") or menuBusy() or os.clock()-lastJump < 0.12 then return end
     local _,h,r = character(player)
     if not h or r.Anchored or h.Sit then return end
     lastJump = os.clock()
@@ -310,6 +514,7 @@ end
 local function cleanup()
     if closed then return end
     closed, ready = true, false
+    stopSilent();stopFly();clearRoles(nil)
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubMM2_Camera")
@@ -337,6 +542,7 @@ local success, failure = xpcall(function()
         Visuals=Window:AddTab("Visuals", "eye"),
         Camera=Window:AddTab("Camera", "camera"),
         Combat=Window:AddTab("Aim Assist", "crosshair"),
+        Silent=Window:AddTab("Silent Aim", "scan-eye"),
         Servers=Window:AddTab("Servers", "server"),
         Settings=Window:AddTab("Settings", "settings"),
     }
@@ -368,7 +574,7 @@ local success, failure = xpcall(function()
     home:AddLabel("ClaudeHub v" .. VERSION)
     local mapLabel=home:AddLabel("Map: not exposed")
     local roundLabel=home:AddLabel("Round: not exposed")
-    local myRoleLabel=home:AddLabel("Tools: Unknown")
+    local myRoleLabel=home:AddLabel("Role: Lobby / unconfirmed")
     local serverLabel = home:AddLabel("Players: --")
     local info = Tabs.Home:AddRightGroupbox("Release", "info")
     info:AddLabel("Ordinary Obsidian")
@@ -376,12 +582,15 @@ local success, failure = xpcall(function()
     info:AddLabel("Gameplay features start disabled")
     info:AddLabel("No anticheat bypass")
     info:AddLabel("UI: deividcomsono (MIT)")
-    info:AddLabel("Soft camera aim / observed tool hints")
+    info:AddLabel("Soft aim / separate Silent Aim / role data")
     local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
     toggle(char, "Speed", "WalkSpeed", "V")
     slider(char, "WalkSpeed", "Speed", 20, 0, 120)
     toggle(char, "InfiniteJump", "Infinite Jump", "J")
     slider(char, "JumpVelocity", "Jump Strength", 50, 20, 100)
+    toggle(char,"Fly","Fly","F")
+    slider(char,"FlySpeed","Fly Speed",45,5,150)
+    toggle(char,"Noclip","Noclip","N")
     local hudBox = Tabs.Character:AddRightGroupbox("HUD", "monitor")
     toggle(hudBox, "HUD", "MM2 HUD", "F9")
     local visuals = Tabs.Visuals:AddLeftGroupbox("Players", "users")
@@ -389,8 +598,9 @@ local success, failure = xpcall(function()
     toggle(visuals, "ESPNames", "Names")
     toggle(visuals, "ESPHealth", "Health")
     toggle(visuals, "ESPDistance", "Distance")
-    toggle(visuals,"ESPRoles","Tool / role hints")
-    toggle(visuals,"ESPRoleColors","Colors by tool hint")
+    toggle(visuals,"ESPRoles","Role labels")
+    toggle(visuals,"ESPRoleColors","Role colors")
+    visuals:AddDropdown("RoundDetection",{Text="Round detection",Values={"Auto","Lobby (force gray)","In round (manual)"},Default=1})
     toggle(visuals,"GunESP","Dropped Gun ESP","G")
     for _,id in ipairs({"ESPNames","ESPDistance","ESPRoles","ESPRoleColors"}) do Toggles[id]:SetValue(true) end
     visuals:AddLabel("Marker Color"):AddColorPicker("ESPColor", {Default=Color3.fromRGB(150,110,255), Title="Player ESP"})
@@ -403,7 +613,7 @@ local success, failure = xpcall(function()
     local cam = Tabs.Camera:AddLeftGroupbox("Camera", "camera")
     toggle(cam, "CustomFOV", "Custom FOV")
     slider(cam, "FOV", "Field of View", 80, 40, 120)
-    toggle(cam, "AntiShake", "Anti Camera Shake")
+    toggle(cam, "AntiShake", "Soft Camera")
     slider(cam, "Stabilize", "Stabilization", 70, 10, 95)
     toggle(cam, "Freecam", "Freecam", "F6")
     slider(cam, "FreecamSpeed", "Freecam Speed", 32, 5, 150)
@@ -432,7 +642,7 @@ local success, failure = xpcall(function()
     toggle(targetBox,"AimAssist","Soft Aim Assist","X")
     targetBox:AddDropdown("AimActivation",{Text="Hold to assist",Values={"RMB or L2","RMB only","L2 only"},Default=1})
     targetBox:AddDropdown("AimPoint",{Text="Aim point",Values={"UpperTorso","Head","HumanoidRootPart"},Default=1})
-    targetBox:AddDropdown("AimRole",{Text="Target filter",Values={"Any visible player","Knife seen","Gun seen"},Default=1})
+    targetBox:AddDropdown("AimRole",{Text="Target filter",Values={"Any visible player","Murderer","Sheriff / Hero"},Default=1})
     slider(targetBox,"AimRadius","Assist radius (pixels)",110,25,300)
     slider(targetBox,"AimSmoothing","Camera smoothing",8,1,25)
     slider(targetBox,"AimRange","Max distance (studs)",180,20,500)
@@ -447,11 +657,24 @@ local success, failure = xpcall(function()
     aimInfo:AddLabel("Visibility check is always enabled.")
     aimInfo:AddLabel("Camera smoothing only; no bullet/damage changes.")
     aimInfo:AddLabel("Device type is not spoofed.")
-    aimInfo:AddLabel("Knife/Gun hints depend on client-visible Tools.")
+    aimInfo:AddLabel("Role filters use role data or observed weapons during a round.")
     local evidence=Tabs.Home:AddRightGroupbox("Client information","info")
-    evidence:AddLabel("No weapon seen means Unknown, not Innocent.")
-    evidence:AddLabel("Gun carrier may be Sheriff or Hero.")
-    evidence:AddLabel("Map/round: attributes only when present.")
+    evidence:AddLabel("Lobby/unconfirmed: gray. Innocent role: green.")
+    evidence:AddLabel("Murderer: red. Sheriff/Hero: blue.")
+    evidence:AddLabel("Auto: round events/flags. Manual fallback in Visuals.")
+    evidence:AddLabel("No role data: unknown stays gray.")
+    local silentBox=Tabs.Silent:AddLeftGroupbox("Gun redirection","crosshair")
+    toggle(silentBox,"SilentAim","Silent Aim","B")
+    silentBox:AddDropdown("SilentRole",{Text="Target filter",Values={"Murderer","Sheriff / Hero","Any visible player"},Default=1})
+    silentBox:AddDropdown("SilentPoint",{Text="Aim point",Values={"UpperTorso","Head","HumanoidRootPart"},Default=1})
+    slider(silentBox,"SilentRadius","Radius (pixels)",140,25,400)
+    slider(silentBox,"SilentRange","Distance (studs)",220,20,600)
+    slider(silentBox,"SilentPrediction","Movement prediction",0,0,0.2,2)
+    silentStatus=silentBox:AddLabel("Silent Aim: off")
+    local silentInfo=Tabs.Silent:AddRightGroupbox("Compatibility","info")
+    silentInfo:AddLabel("Separate from camera Aim Assist. Shoot manually.")
+    silentInfo:AddLabel("Gun/CreateBeam/RemoteFunction protocol only.")
+    silentInfo:AddLabel("Requires supported namecall hooks; visibility checked.")
     local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
     servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
     servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
@@ -663,6 +886,7 @@ local success, failure = xpcall(function()
                 return
             end
             if on(other) then Toggles[other]:SetValue(false) end
+            if on("Fly") then Toggles.Fly:SetValue(false) end
             if mode == "Free" then
                 resetCombat()
                 Library:Toggle(false)
@@ -675,6 +899,30 @@ local success, failure = xpcall(function()
     Options.SpectatePlayer:OnChanged(function()
         if ready and on("Spectate") and not startCamera("Spectate") then Toggles.Spectate:SetValue(false) end
     end)
+    Toggles.Fly:OnChanged(function()
+        if not ready then return end
+        if not on("Fly") then stopFly();return end
+        Toggles.Freecam:SetValue(false);Toggles.Spectate:SetValue(false)
+        local ok,active=pcall(startFly)
+        if not ok or not active then
+            stopFly();Toggles.Fly:SetValue(false);notify("Fly: character is not ready or constraints unavailable")
+        end
+    end)
+    Toggles.Noclip:OnChanged(function() if ready and not on("Noclip") then restore(pools.Noclip) end end)
+    Toggles.SilentAim:OnChanged(function()
+        if not ready then return end
+        stopSilent()
+        if not on("SilentAim") then silentStatus:SetText("Silent Aim: off");return end
+        local ok,reason=startSilent()
+        if not ok then
+            Toggles.SilentAim:SetValue(false);notify("Silent Aim unavailable: "..tostring(reason));return
+        end
+        silentStatus:SetText("Hook active; waiting for supported gun shot")
+    end)
+    Options.RoundDetection:OnChanged(function() roles={};rolesAt=-math.huge;rolePollAt=-math.huge;rolesGeneration+=1;resetCombat() end)
+    for _,object in ipairs(ReplicatedStorage:GetDescendants()) do bindRoundRemote(object) end
+    connect(ReplicatedStorage.DescendantAdded,bindRoundRemote)
+    connect(RunService.PreSimulation,updateMovement)
     Toggles.AimAssist:OnChanged(function() resetCombat();targetMarker.Enabled=false;aimCircle.Visible=false end)
     Toggles.GunESP:OnChanged(function() if ready then scanGuns() end end)
     connect(workspace.DescendantAdded,function(object) if ready and on("GunESP") then rememberGun(object) end end)
@@ -701,10 +949,14 @@ local success, failure = xpcall(function()
         end
         task.defer(function() if ready and not closed then refreshPlayers() end end)
     end)
-    connect(player.CharacterRemoving,function() resetCombat() end)
+    connect(player.CharacterRemoving,function()
+        resetCombat();stopFly();restore(pools.Noclip)
+        if ready then Toggles.Fly:SetValue(false) end
+    end)
     connect(player.CharacterAdded, function()
         if not ready then return end
         Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
+        Toggles.Fly:SetValue(false);stopFly();restore(pools.Noclip)
         restore(pools.Speed); resetCombat(); smoothCamera=nil
     end)
     connect(UIS.JumpRequest,jumpNow)
@@ -737,7 +989,7 @@ local success, failure = xpcall(function()
         local _, h, r = character(player)
         -- Old character references must not survive respawn or removal.
         for object in pairs(pools.Speed) do if object ~= h then restore(pools.Speed); break end end
-        if h and on("Speed") and not on("Freecam") then
+        if h and on("Speed") and not on("Freecam") and not on("Fly") then
             override(pools.Speed,h,"WalkSpeed",val("WalkSpeed",20))
         elseif next(pools.Speed) then restore(pools.Speed) end
         if on("Fullbright") then
@@ -753,10 +1005,10 @@ local success, failure = xpcall(function()
         accumulator += dt
         if accumulator < 0.15 then return end
         accumulator = 0
-        updateMarkers();updateGuns()
+        pollRoles();updateMarkers();updateGuns()
         local map,roundState=roundInfo()
         mapLabel:SetText("Map: "..map);roundLabel:SetText("Round: "..roundState)
-        local _,myHint=roleHint(player);myRoleLabel:SetText("Tools: "..myHint)
+        local _,myHint=roleHint(player);myRoleLabel:SetText("Role: "..myHint)
         serverLabel:SetText(string.format("Players: %d / %d",#Players:GetPlayers(),Players.MaxPlayers))
         targetStatus:SetText(not on("AimAssist") and "Assist: off" or (combatTarget and "Target: "..combatTarget.DisplayName or "Assist: hold RMB / L2"))
         if on("HUD") then
@@ -831,10 +1083,12 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","RoundDetection"})
         manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
+    for _,id in ipairs({"Fly","Noclip","SilentAim"}) do Toggles[id]:SetValue(false) end
+    Options.RoundDetection:SetValue("Auto")
     notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
 end, function(err) return tostring(err) end)
 if not success then
