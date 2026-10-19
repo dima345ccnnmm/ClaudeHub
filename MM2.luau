@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.2 | Ordinary Obsidian (deividcomsono, MIT).
--- Ordinary Obsidian. Silent Aim Raycast port: Averiias, Stefanuk12, xaxa.
-local VERSION = "0.1.2"
+-- ClaudeHub MM2 v0.1.3 | Ordinary Obsidian (deividcomsono, MIT).
+-- Ordinary Obsidian. Full Silent Aim port: Averiias, Stefanuk12, xaxa.
+local VERSION = "0.1.3"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -443,124 +443,322 @@ local function updateMovement()
     elseif next(pools.Noclip) then restore(pools.Noclip) end
 end
 
--- Raycast selection/direction/namecall logic adapted from the user-provided
--- Universal Silent Aim by Averiias, Stefanuk12, xaxa (main.lua).
--- Original standalone Linoria UI, Drawing objects, file handling, legacy-ray
--- and Mouse.Hit/Target hooks are intentionally not included.
-local silentState
-local silentStatus
-local ExpectedArguments={
-    Raycast={ArgCountRequired=3,Args={"Instance","Vector3","Vector3","RaycastParams"}}
-}
-local silentRandom=Random.new()
-local function CalculateChance(percentage)
-    percentage=math.clamp(tonumber(percentage) or 0,0,100)
-    if percentage<=0 then return false end
-    if percentage>=100 then return true end
-    return silentRandom:NextNumber(0,100)<percentage
-end
-local function ValidateArguments(args,rayMethod)
-    local count=args.n or #args
-    if count<rayMethod.ArgCountRequired or count>#rayMethod.Args then return false end
-    for index=1,rayMethod.ArgCountRequired do
-        if typeof(args[index])~=rayMethod.Args[index] then return false end
+-- Full functional port of the supplied Universal Silent Aim main.lua.
+-- Original authors: Averiias, Stefanuk12, xaxa. Standalone Linoria UI removed.
+local SilentEngine=(function()
+    local engine={
+        Settings={Enabled=false,ClassName="Universal Silent Aim - Averiias, Stefanuk12, xaxa",
+            ToggleKey="B",TeamCheck=false,VisibleCheck=true,TargetPart="HumanoidRootPart",SilentAimMethod="Raycast",
+            FOVRadius=130,FOVVisible=false,ShowSilentAimTarget=false,MouseHitPrediction=false,
+            MouseHitPredictionAmount=0.165,HitChance=100},
+        Color=Color3.fromRGB(54,57,241),TargetColor=Color3.fromRGB(54,57,241),
+        LastError="",Seen=0,Redirected=0,CameraFilterAvailable=type(getcallingscript)=="function",
+        ConfigPaths={},OwnedStates={},Destroyed=false,
+    }
+    local Mouse=player:GetMouse()
+    local random=Random.new()
+    local methods={Raycast=true,FindPartOnRay=true,FindPartOnRayWithWhitelist=true,
+        FindPartOnRayWithIgnoreList=true,["Mouse.Hit/Target"]=true}
+    local ExpectedArguments={
+        FindPartOnRayWithIgnoreList={ArgCountRequired=3,Args={"Instance","Ray","table","boolean","boolean"}},
+        FindPartOnRayWithWhitelist={ArgCountRequired=3,Args={"Instance","Ray","table","boolean"}},
+        FindPartOnRay={ArgCountRequired=2,Args={"Instance","Ray","Instance","boolean","boolean"}},
+        Raycast={ArgCountRequired=3,Args={"Instance","Vector3","Vector3","RaycastParams"}},
+    }
+    local function CalculateChance(percentage)
+        percentage=math.clamp(math.floor(tonumber(percentage) or 0),0,100)
+        if percentage<=0 then return false end
+        if percentage>=100 then return true end
+        return random:NextNumber(0,100)<percentage
     end
-    for index=rayMethod.ArgCountRequired+1,count do
-        if args[index]~=nil and typeof(args[index])~=rayMethod.Args[index] then return false end
-    end
-    return true
-end
-local function getDirection(origin,position)
-    local offset=position-origin
-    if offset.Magnitude<0.001 then return nil end
-    return offset.Unit*1000
-end
-local function getMousePosition()
-    return UIS:GetMouseLocation()
-end
-local function IsPlayerVisible(target,camera,targetPart)
-    local targetCharacter=target.Character
-    local localCharacter=player.Character
-    if not targetCharacter or not localCharacter or not targetPart then return false end
-    local castPoints={targetPart.Position}
-    local ignoreList={localCharacter,targetCharacter}
-    if markerFolder then table.insert(ignoreList,markerFolder) end
-    local obscuring=camera:GetPartsObscuringTarget(castPoints,ignoreList)
-    return #obscuring==0
-end
-local function getClosestPlayer()
-    local camera=workspace.CurrentCamera
-    if not camera then return nil end
-    local closest,distanceToMouse
-    local mousePosition=getMousePosition()
-    for _,target in ipairs(Players:GetPlayers()) do
-        if target==player then continue end
-        if on("SilentTeamCheck") and target.Team~=nil and target.Team==player.Team then continue end
-        local c,h,root=character(target)
-        if not c or not h or not root then continue end
-        local selected=val("SilentPoint","HumanoidRootPart")
-        if selected=="Random" then
-            selected=({"Head","HumanoidRootPart"})[silentRandom:NextInteger(1,2)]
+    local function ValidateArguments(args,description)
+        if args.n<description.ArgCountRequired or args.n>#description.Args then return false end
+        for index=1,args.n do
+            if args[index]==nil and index>description.ArgCountRequired then continue end
+            if typeof(args[index])~=description.Args[index] then return false end
         end
-        local hitPart=c:FindFirstChild(selected)
-        if not hitPart or not hitPart:IsA("BasePart") then continue end
-        if on("SilentVisibleCheck") and not IsPlayerVisible(target,camera,hitPart) then continue end
-        -- WorldToScreenPoint and GetMouseLocation both include the GUI inset,
-        -- matching the source script's mouse-centered selection.
-        local screen,onScreen=camera:WorldToScreenPoint(root.Position)
-        if not onScreen or screen.Z<=0 then continue end
-        local distance=(mousePosition-Vector2.new(screen.X,screen.Y)).Magnitude
-        if distance<=(distanceToMouse or val("SilentRadius",130)) then
-            closest=hitPart;distanceToMouse=distance
-        end
+        return true
     end
-    return closest
-end
-local function stopSilent()
-    if silentState then silentState.Resolve=nil end
-end
-local function redirectRaycast(arguments)
-    if closed or not ready or not on("SilentAim") or menuBusy() or cameraState then return nil end
-    if val("SilentMethod","Raycast")~="Raycast" then return nil end
-    if not character(player) then return nil end
-    local camera=workspace.CurrentCamera
-    if not camera or camera.CameraType==Enum.CameraType.Scriptable then return nil end
-    if not ValidateArguments(arguments,ExpectedArguments.Raycast) then return nil end
-    if not CalculateChance(val("SilentHitChance",100)) then return nil end
-    local hitPart=getClosestPlayer()
-    if hitPart then return getDirection(arguments[2],hitPart.Position) end
-end
-local function startSilent()
-    if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" then
-        return false,"hookmetamethod / getnamecallmethod / checkcaller unavailable"
+    local function getDirection(origin,position)
+        local offset=position-origin
+        if offset.Magnitude<0.001 then return nil end
+        return offset.Unit*1000
     end
-    local state=env.__ClaudeHubMM2SilentRaycastHook
-    if not state or not state.Installed then
-        state={}
-        local oldNamecall
-        local methodName=getnamecallmethod
-        local isCaller=checkcaller
-        local function intercept(...)
-            local arguments=table.pack(...)
-            local self=arguments[1]
-            local resolver=state.Resolve
-            if resolver and self==workspace and methodName()=="Raycast" and not isCaller() then
-                local ok,direction=pcall(resolver,arguments)
-                if ok and direction then
-                    arguments[3]=direction
-                    return oldNamecall(table.unpack(arguments,1,arguments.n))
-                end
+    local function getMousePosition() return UIS:GetMouseLocation() end
+    local function IsPlayerVisible(target,camera,part)
+        if not target.Character or not player.Character then return false end
+        local ignore={player.Character,target.Character}
+        if markerFolder then table.insert(ignore,markerFolder) end
+        -- The source mixed Instances into CastPoints; Roblox expects Vector3s.
+        return #camera:GetPartsObscuringTarget({part.Position},ignore)==0
+    end
+    local function getClosestPlayer()
+        local camera=workspace.CurrentCamera
+        if not camera then return nil end
+        local closest,distanceToMouse
+        local mousePosition=getMousePosition()
+        for _,target in ipairs(Players:GetPlayers()) do
+            if target==player then continue end
+            if engine.Settings.TeamCheck and target.Team==player.Team then continue end
+            local c,h,root=character(target)
+            if not c or not h or not root then continue end
+            local targetName=engine.Settings.TargetPart
+            if targetName=="Random" then targetName=({"Head","HumanoidRootPart"})[random:NextInteger(1,2)] end
+            local part=c:FindFirstChild(targetName)
+            if not part or not part:IsA("BasePart") then continue end
+            if engine.Settings.VisibleCheck and not IsPlayerVisible(target,camera,part) then continue end
+            local point,onScreen=camera:WorldToScreenPoint(root.Position)
+            if not onScreen or point.Z<=0 then continue end
+            local distance=(mousePosition-Vector2.new(point.X,point.Y)).Magnitude
+            if distance<=(distanceToMouse or engine.Settings.FOVRadius) then
+                closest=part;distanceToMouse=distance
             end
-            return oldNamecall(...)
+        end
+        return closest
+    end
+    local function active()
+        return not engine.Destroyed and not closed and ready and engine.Settings.Enabled
+            and focused and not cameraState and UIS:GetFocusedTextBox()==nil and Library.Toggled~=true
+    end
+    local function fromCamera(scriptObject)
+        if typeof(scriptObject)~="Instance" then return false end
+        local scripts=player:FindFirstChild("PlayerScripts")
+        if not scripts or not scriptObject:IsDescendantOf(scripts) then return false end
+        local object=scriptObject
+        while object and object~=scripts do
+            local name=object.Name
+            if name=="PlayerModule" or name=="CameraModule" or name=="CameraScript" or name=="ControlModule" then return true end
+            object=object.Parent
+        end
+        return false
+    end
+    local function rayResolver(method,args,caller)
+        if not active() or fromCamera(caller) then return nil end
+        local chosen=engine.Settings.SilentAimMethod
+        if method=="findPartOnRay" then method="FindPartOnRay" end
+        if chosen~=method then return nil end
+        engine.Seen+=1
+        local description=ExpectedArguments[method]
+        if not description or not ValidateArguments(args,description) then return nil end
+        if not CalculateChance(engine.Settings.HitChance) then return nil end
+        local hitPart=getClosestPlayer()
+        if not hitPart then return nil end
+        local origin=method=="Raycast" and args[2] or args[2].Origin
+        local direction=getDirection(origin,hitPart.Position)
+        if not direction then return nil end
+        if method=="Raycast" then args[3]=direction else args[2]=Ray.new(origin,direction) end
+        engine.Redirected+=1
+        return args
+    end
+    local function indexResolver(index,caller)
+        if not active() or fromCamera(caller) or engine.Settings.SilentAimMethod~="Mouse.Hit/Target" then return false end
+        if type(index)~="string" then return false end
+        index=index:lower()
+        if index~="target" and index~="hit" and index~="unitray" then return false end
+        engine.Seen+=1
+        local hitPart=getClosestPlayer()
+        if not hitPart then return false end
+        engine.Redirected+=1
+        if index=="target" then return true,hitPart end
+        if index=="hit" then
+            local cf=hitPart.CFrame
+            if engine.Settings.MouseHitPrediction then
+                cf+=hitPart.AssemblyLinearVelocity*engine.Settings.MouseHitPredictionAmount
+            end
+            return true,cf
+        end
+        local camera=workspace.CurrentCamera
+        if not camera then return false end
+        local direction=getDirection(camera.CFrame.Position,hitPart.Position)
+        if direction then return true,Ray.new(camera.CFrame.Position,direction.Unit) end
+        return false
+    end
+    local function recordError(err)
+        engine.LastError=tostring(err):sub(1,220)
+    end
+    function engine:Stop()
+        self.Settings.Enabled=false
+        for _,state in pairs(self.OwnedStates) do
+            if state.Owner==self then state.Resolve=nil;state.RecordError=nil;state.Owner=nil end
+        end
+    end
+    function engine:Install()
+        if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" then
+            return false,"hookmetamethod / getnamecallmethod / checkcaller unavailable"
+        end
+        self.LastError=""
+        -- Retire only the older ClaudeHub-specific resolvers, not other scripts.
+        for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook"}) do
+            local previousState=env[key]
+            if type(previousState)=="table" then previousState.Resolve=nil end
         end
         local wrap=type(newcclosure)=="function" and newcclosure or function(fn) return fn end
-        local ok,previous=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
-        if not ok or type(previous)~="function" then return false,tostring(previous) end
-        oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentRaycastHook=state
+        local getMethod,isCaller=getnamecallmethod,checkcaller
+        local getScript=type(getcallingscript)=="function" and getcallingscript or nil
+        local function callerScript()
+            if getScript then local ok,scriptObject=pcall(getScript);if ok then return scriptObject end end
+        end
+        local rayState=env.__ClaudeHubMM2SilentFullNamecall_v1
+        if not rayState or not rayState.Installed then
+            rayState={};local state=rayState
+            local oldNamecall
+            local function intercept(...)
+                local method=getMethod()
+                local self=select(1,...)
+                if state.Resolve and self==workspace and not isCaller()
+                    and (method=="Raycast" or method=="FindPartOnRay" or method=="findPartOnRay"
+                        or method=="FindPartOnRayWithIgnoreList" or method=="FindPartOnRayWithWhitelist") then
+                    local args=table.pack(...)
+                    local ok,modified=pcall(state.Resolve,method,args,callerScript())
+                    if ok and modified then return oldNamecall(table.unpack(modified,1,modified.n)) end
+                    if not ok and state.RecordError then state.RecordError(modified) end
+                end
+                return oldNamecall(...)
+            end
+            local ok,previous=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
+            if not ok or type(previous)~="function" then return false,tostring(previous) end
+            oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullNamecall_v1=state
+        end
+        self.OwnedStates.Ray=rayState
+        rayState.Owner=self;rayState.Resolve=rayResolver;rayState.RecordError=recordError
+        local indexState=env.__ClaudeHubMM2SilentFullIndex_v1
+        if not indexState or not indexState.Installed then
+            indexState={};local state=indexState
+            local oldIndex
+            local mouse=Mouse
+            local function intercept(self,index)
+                if state.Resolve and self==mouse and not isCaller() then
+                    local ok,handled,value=pcall(state.Resolve,index,callerScript())
+                    if ok and handled then return value end
+                    if not ok and state.RecordError then state.RecordError(handled) end
+                end
+                return oldIndex(self,index)
+            end
+            local ok,previous=pcall(function() return hookmetamethod(game,"__index",wrap(intercept)) end)
+            if not ok or type(previous)~="function" then
+                rayState.Resolve=nil;rayState.RecordError=nil;rayState.Owner=nil
+                return false,"Mouse index hook: "..tostring(previous)
+            end
+            oldIndex=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullIndex_v1=state
+        end
+        self.OwnedStates.Index=indexState
+        indexState.Owner=self;indexState.Resolve=indexResolver;indexState.RecordError=recordError
+        self.Settings.Enabled=true
+        return true
     end
-    silentState=state;state.Resolve=redirectRaycast
-    return true
-end
+    local drawingCircle,drawingTarget,visualGui,nativeCircle,nativeTarget,circleStroke
+    local function destroyVisuals()
+        for _,object in pairs({drawingCircle,drawingTarget}) do pcall(function() object:Remove() end) end
+        drawingCircle,drawingTarget=nil,nil
+        if visualGui then visualGui:Destroy();visualGui=nil end
+    end
+    function engine:CreateVisuals()
+        if type(Drawing)=="table" and type(Drawing.new)=="function" then
+            local ok=pcall(function()
+                drawingCircle=Drawing.new("Circle");drawingCircle.Thickness=1;drawingCircle.NumSides=100
+                drawingCircle.Filled=false;drawingCircle.Transparency=1;drawingCircle.ZIndex=999
+                drawingCircle.Visible=false
+                drawingTarget=Drawing.new("Square");drawingTarget.Thickness=20;drawingTarget.Size=Vector2.new(20,20)
+                drawingTarget.Filled=true;drawingTarget.ZIndex=999;drawingTarget.Visible=false
+            end)
+            if ok then return end
+            destroyVisuals()
+        end
+        visualGui=Instance.new("ScreenGui");visualGui.Name="ClaudeHubMM2_SilentVisuals"
+        visualGui.IgnoreGuiInset=true;visualGui.ResetOnSpawn=false;visualGui.DisplayOrder=20
+        visualGui.Parent=player:WaitForChild("PlayerGui")
+        nativeCircle=Instance.new("Frame",visualGui);nativeCircle.AnchorPoint=Vector2.new(0.5,0.5)
+        nativeCircle.BackgroundTransparency=1;nativeCircle.BorderSizePixel=0;nativeCircle.Visible=false
+        local corner=Instance.new("UICorner",nativeCircle);corner.CornerRadius=UDim.new(1,0)
+        circleStroke=Instance.new("UIStroke",nativeCircle);circleStroke.Thickness=1
+        nativeTarget=Instance.new("Frame",visualGui);nativeTarget.Size=UDim2.fromOffset(20,20)
+        nativeTarget.BorderSizePixel=0;nativeTarget.Visible=false
+    end
+    function engine:UpdateVisuals()
+        local show=active()
+        local mouse=getMousePosition()
+        local circleVisible=not self.Destroyed and not closed and ready and focused and self.Settings.FOVVisible
+        if drawingCircle then
+            drawingCircle.Visible=circleVisible;drawingCircle.Position=mouse
+            drawingCircle.Radius=self.Settings.FOVRadius;drawingCircle.Color=self.Color
+            drawingTarget.Visible=false;drawingTarget.Color=self.TargetColor
+        elseif nativeCircle then
+            nativeCircle.Visible=circleVisible;nativeCircle.Position=UDim2.fromOffset(mouse.X,mouse.Y)
+            nativeCircle.Size=UDim2.fromOffset(self.Settings.FOVRadius*2,self.Settings.FOVRadius*2)
+            circleStroke.Color=self.Color;nativeTarget.Visible=false;nativeTarget.BackgroundColor3=self.TargetColor
+        end
+        if not show or not self.Settings.ShowSilentAimTarget then return end
+        local part=getClosestPlayer()
+        local camera=workspace.CurrentCamera
+        if not part or not camera then return end
+        local root=part.Parent:FindFirstChild("HumanoidRootPart") or part
+        local projected,onScreen=camera:WorldToScreenPoint(root.Position)
+        if not onScreen then return end
+        if drawingTarget then drawingTarget.Position=Vector2.new(projected.X,projected.Y);drawingTarget.Visible=true
+        elseif nativeTarget then nativeTarget.Position=UDim2.fromOffset(projected.X,projected.Y);nativeTarget.Visible=true end
+    end
+    local configFolder="ClaudeHub/MM2/UniversalSilentAim/"..tostring(game.PlaceId)
+    local legacyFolder="UniversalSilentAim/"..tostring(game.PlaceId)
+    local function ensureFolder(path)
+        if type(isfolder)~="function" or type(makefolder)~="function" then error("File-system functions unavailable",0) end
+        local current=""
+        for segment in path:gmatch("[^/]+") do
+            current=current=="" and segment or current.."/"..segment
+            if not isfolder(current) then makefolder(current) end
+        end
+    end
+    function engine:ListConfigs()
+        if type(listfiles)~="function" or type(isfolder)~="function" then return {},"File-system functions unavailable" end
+        local paths,labels={},{}
+        local ok,err=pcall(function()
+            for _,folder in ipairs({configFolder,legacyFolder}) do
+                if not isfolder(folder) then continue end
+                for _,path in ipairs(listfiles(folder)) do
+                    if path:sub(-4):lower()~=".lua" then continue end
+                    local filename=path:match("([^/\\]+)%.lua$")
+                    if filename then
+                        local label=filename..(folder==legacyFolder and " [original]" or "")
+                        paths[label]=path;table.insert(labels,label)
+                    end
+                end
+            end
+        end)
+        if not ok then return {},tostring(err) end
+        table.sort(labels);self.ConfigPaths=paths
+        return labels
+    end
+    function engine:SaveConfig(name)
+        if type(name)~="string" or #name<1 or #name>60 or not name:match("^[%w _%-]+$") then
+            return false,"Name: 1-60 letters, digits, spaces, _ or -"
+        end
+        local ok,err=pcall(function()
+            if type(writefile)~="function" then error("writefile unavailable",0) end
+            ensureFolder(configFolder)
+            local data=table.clone(self.Settings)
+            data.Color={self.Color.R,self.Color.G,self.Color.B}
+            data.TargetColor={self.TargetColor.R,self.TargetColor.G,self.TargetColor.B}
+            writefile(configFolder.."/"..name..".lua",HttpService:JSONEncode(data))
+        end)
+        return ok,err
+    end
+    function engine:ReadConfig(label)
+        local path=self.ConfigPaths[label]
+        if not path then return nil,"Select a configuration" end
+        local ok,data=pcall(function()
+            if type(readfile)~="function" then error("readfile unavailable",0) end
+            return HttpService:JSONDecode(readfile(path))
+        end)
+        if not ok or type(data)~="table" then return nil,tostring(data) end
+        return data
+    end
+    engine.Methods=methods
+    function engine:Destroy()
+        self:Stop();self.Destroyed=true;destroyVisuals()
+    end
+    return engine
+end)()
+local silentStatus
+local function stopSilent() SilentEngine:Stop() end
 
 local function jumpNow()
     if not ready or not on("InfiniteJump") or on("Freecam") or on("Fly") or menuBusy() or os.clock()-lastJump < 0.12 then return end
@@ -574,7 +772,7 @@ end
 local function cleanup()
     if closed then return end
     closed, ready = true, false
-    stopSilent();stopFly();clearRoles(nil)
+    SilentEngine:Destroy();stopFly();clearRoles(nil)
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubMM2_Camera")
@@ -728,15 +926,105 @@ local success, failure = xpcall(function()
     toggle(silentBox,"SilentTeamCheck","Team Check")
     toggle(silentBox,"SilentVisibleCheck","Visible Check")
     Toggles.SilentVisibleCheck:SetValue(true)
-    silentBox:AddDropdown("SilentPoint",{Text="Target Part",Values={"HumanoidRootPart","Head","Random"},Default=1})
-    silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"Raycast"},Default=1})
-    slider(silentBox,"SilentHitChance","Hit chance",100,0,100)
-    slider(silentBox,"SilentRadius","FOV Radius (pixels)",130,0,360)
+    silentBox:AddDropdown("SilentPoint",{Text="Target Part",Values={"Head","HumanoidRootPart","Random"},Default=2})
+    silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"Raycast","FindPartOnRay","FindPartOnRayWithWhitelist","FindPartOnRayWithIgnoreList","Mouse.Hit/Target"},Default=1})
+    slider(silentBox,"SilentHitChance","Hit chance",100,0,100,1)
     silentStatus=silentBox:AddLabel("Silent Aim: off")
-    local silentInfo=Tabs.Silent:AddRightGroupbox("Credits","info")
+    local silentVisuals=Tabs.Silent:AddLeftGroupbox("Field Of View","scan-eye")
+    toggle(silentVisuals,"SilentFOVVisible","Show FOV Circle")
+    silentVisuals:AddLabel("Circle Color"):AddColorPicker("SilentFOVColor",{Default=SilentEngine.Color,Title="Silent Aim Circle"})
+    slider(silentVisuals,"SilentRadius","FOV Circle Radius",130,0,360)
+    toggle(silentVisuals,"SilentShowTarget","Show Silent Aim Target")
+    silentVisuals:AddLabel("Target Color"):AddColorPicker("SilentTargetColor",{Default=SilentEngine.TargetColor,Title="Silent Aim Target"})
+    local silentPrediction=Tabs.Silent:AddLeftGroupbox("Prediction","move-right")
+    toggle(silentPrediction,"SilentPredictionEnabled","Mouse.Hit/Target Prediction")
+    slider(silentPrediction,"SilentPredictionAmount","Prediction Amount",0.165,0.165,1,3)
+    local silentInfo=Tabs.Silent:AddRightGroupbox("Credits / Status","info")
     silentInfo:AddLabel("Universal Silent Aim")
     silentInfo:AddLabel("Averiias / Stefanuk12 / xaxa")
-    silentInfo:AddLabel("Raycast port from the supplied main.lua")
+    silentInfo:AddLabel("Full source functionality; Obsidian interface")
+    silentInfo:AddLabel(SilentEngine.CameraFilterAvailable and "Camera script filter: available" or "Camera script filter: API unavailable")
+    local silentCounter=silentInfo:AddLabel("Matching calls: 0 | redirected: 0")
+    local silentError=silentInfo:AddLabel("Last error: none")
+    local configs=Tabs.Silent:AddRightGroupbox("Configurations","save")
+    configs:AddInput("SilentConfigName",{Text="Create Configuration",Default="",Finished=true})
+    configs:AddDropdown("SilentConfigChoice",{Text="Saved Configuration",Values={},AllowNull=true})
+    local function refreshSilentConfigs()
+        local labels,err=SilentEngine:ListConfigs()
+        Options.SilentConfigChoice:SetValues(labels)
+        if err then notify("Silent Aim configs: "..err) end
+    end
+    local function saveSilentConfig(name)
+        SilentEngine.Settings.ToggleKey=Options.SilentAimBind.Value
+        local ok,err=SilentEngine:SaveConfig(name)
+        if not ok then notify("Silent Aim config: "..tostring(err));return end
+        refreshSilentConfigs();notify("Silent Aim configuration saved")
+    end
+    action(configs,"Create Configuration",function() saveSilentConfig(val("SilentConfigName","")) end)
+    action(configs,"Save Configuration",function()
+        local label=val("SilentConfigChoice","")
+        if label=="" or label:find(" [original]",1,true) then
+            notify("Enter a new name to create a configuration copy");return
+        end
+        saveSilentConfig(label)
+    end)
+    action(configs,"Load Configuration",function()
+        local data,err=SilentEngine:ReadConfig(val("SilentConfigChoice",""))
+        if not data then notify("Silent Aim config: "..tostring(err));return end
+        Toggles.SilentAim:SetValue(false)
+        for field,id in pairs({TeamCheck="SilentTeamCheck",VisibleCheck="SilentVisibleCheck",FOVVisible="SilentFOVVisible",
+            ShowSilentAimTarget="SilentShowTarget",MouseHitPrediction="SilentPredictionEnabled"}) do
+            if type(data[field])=="boolean" then Toggles[id]:SetValue(data[field]) end
+        end
+        if data.TargetPart=="Head" or data.TargetPart=="HumanoidRootPart" or data.TargetPart=="Random" then
+            Options.SilentPoint:SetValue(data.TargetPart)
+        end
+        if type(data.SilentAimMethod)=="string" and SilentEngine.Methods[data.SilentAimMethod] then
+            Options.SilentMethod:SetValue(data.SilentAimMethod)
+        end
+        for field,spec in pairs({FOVRadius={"SilentRadius",0,360},HitChance={"SilentHitChance",0,100},
+            MouseHitPredictionAmount={"SilentPredictionAmount",0.165,1}}) do
+            local value=data[field]
+            if type(value)=="number" and value==value and math.abs(value)<math.huge then
+                Options[spec[1]]:SetValue(math.clamp(value,spec[2],spec[3]))
+            end
+        end
+        for field,id in pairs({Color="SilentFOVColor",TargetColor="SilentTargetColor"}) do
+            local rgb=data[field]
+            if type(rgb)=="table" and type(rgb[1])=="number" and type(rgb[2])=="number" and type(rgb[3])=="number" then
+                Options[id]:SetValueRGB(Color3.new(math.clamp(rgb[1],0,1),math.clamp(rgb[2],0,1),math.clamp(rgb[3],0,1)))
+            end
+        end
+        if type(data.ToggleKey)=="string" then
+            local key=data.ToggleKey
+            local valid=key=="None" or pcall(function() assert(Enum.KeyCode[key]) end)
+            if valid then Options.SilentAimBind:SetValue({key,"Toggle"}) end
+        end
+        if data.Enabled==true then Toggles.SilentAim:SetValue(true) end
+        notify("Silent Aim configuration loaded")
+    end)
+    action(configs,"Refresh Configurations",refreshSilentConfigs)
+    local function bindSilentToggle(id,field)
+        SilentEngine.Settings[field]=on(id)
+        Toggles[id]:OnChanged(function() SilentEngine.Settings[field]=on(id) end)
+    end
+    local function bindSilentOption(id,field)
+        SilentEngine.Settings[field]=Options[id].Value
+        Options[id]:OnChanged(function() SilentEngine.Settings[field]=Options[id].Value end)
+    end
+    for id,field in pairs({SilentTeamCheck="TeamCheck",SilentVisibleCheck="VisibleCheck",SilentFOVVisible="FOVVisible",
+        SilentShowTarget="ShowSilentAimTarget",SilentPredictionEnabled="MouseHitPrediction"}) do bindSilentToggle(id,field) end
+    for id,field in pairs({SilentPoint="TargetPart",SilentMethod="SilentAimMethod",SilentHitChance="HitChance",
+        SilentRadius="FOVRadius",SilentPredictionAmount="MouseHitPredictionAmount"}) do bindSilentOption(id,field) end
+    Options.SilentFOVColor:OnChanged(function() SilentEngine.Color=Options.SilentFOVColor.Value end)
+    Options.SilentTargetColor:OnChanged(function() SilentEngine.TargetColor=Options.SilentTargetColor.Value end)
+    Options.SilentAimBind:OnChanged(function() SilentEngine.Settings.ToggleKey=Options.SilentAimBind.Value end)
+    SilentEngine:CreateVisuals()
+    connect(RunService.RenderStepped,function()
+        if not ready then return end
+        local ok,err=pcall(function() SilentEngine:UpdateVisuals() end)
+        if not ok then SilentEngine.LastError=tostring(err):sub(1,220) end
+    end)
     local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
     servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
     servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
@@ -975,11 +1263,13 @@ local success, failure = xpcall(function()
         if not ready then return end
         stopSilent()
         if not on("SilentAim") then silentStatus:SetText("Silent Aim: off");return end
-        local ok,reason=startSilent()
+        Toggles.AimAssist:SetValue(false);Toggles.AntiShake:SetValue(false)
+        resetCombat();smoothCamera=nil
+        local ok,reason=SilentEngine:Install()
         if not ok then
             Toggles.SilentAim:SetValue(false);notify("Silent Aim unavailable: "..tostring(reason));return
         end
-        silentStatus:SetText("Raycast hook active")
+        silentStatus:SetText("Enabled: "..SilentEngine.Settings.SilentAimMethod)
     end)
     Options.RoundDetection:OnChanged(function() roles={};rolesAt=-math.huge;rolePollAt=-math.huge;rolesGeneration+=1;resetCombat() end)
     for _,object in ipairs(ReplicatedStorage:GetDescendants()) do bindRoundRemote(object) end
@@ -1031,7 +1321,7 @@ local success, failure = xpcall(function()
         local subject=camera and camera.CameraSubject
         local ownView=ownCharacter and subject and (subject==ownCharacter or subject:IsDescendantOf(ownCharacter))
         local allowed=on("AimAssist") and camera and camera.CameraType~=Enum.CameraType.Scriptable
-            and ownView and not cameraState and not menuBusy()
+            and ownView and not cameraState and not menuBusy() and not on("SilentAim")
         aimCircle.Visible=allowed and on("AimCircle") or false
         local diameter=val("AimRadius",110)*2;aimCircle.Size=UDim2.fromOffset(diameter,diameter)
         if not allowed or not assistHeld() or (on("AimRequireWeapon") and not equippedWeapon()) then
@@ -1068,6 +1358,9 @@ local success, failure = xpcall(function()
         if accumulator < 0.15 then return end
         accumulator = 0
         pollRoles();updateMarkers();updateGuns()
+        silentCounter:SetText(string.format("Matching calls: %d | redirected: %d",SilentEngine.Seen,SilentEngine.Redirected))
+        silentError:SetText("Last error: "..(SilentEngine.LastError~="" and SilentEngine.LastError or "none"))
+        silentStatus:SetText(not on("SilentAim") and "Silent Aim: off" or (menuBusy() or cameraState) and "Silent Aim: paused" or "Enabled: "..SilentEngine.Settings.SilentAimMethod)
         local map,roundState=roundInfo()
         mapLabel:SetText("Map: "..map);roundLabel:SetText("Round: "..roundState)
         local _,myHint=roleHint(player);myRoleLabel:SetText("Role: "..myHint)
@@ -1095,7 +1388,7 @@ local success, failure = xpcall(function()
         if camera and on("CustomFOV") then override(pools.FOV,camera,"FieldOfView",val("FOV",80))
         elseif next(pools.FOV) then restore(pools.FOV) end
         if not cameraState then
-            if camera and on("AntiShake") then
+            if camera and on("AntiShake") and not on("SilentAim") then
                 local alpha=1-math.exp(-(100-val("Stabilize",70))*dt)
                 smoothCamera=smoothCamera and smoothCamera:Lerp(camera.CFrame,alpha) or camera.CFrame
                 camera.CFrame=smoothCamera
@@ -1145,7 +1438,7 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","RoundDetection"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","RoundDetection","SilentConfigName","SilentConfigChoice"})
         manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
@@ -1158,6 +1451,7 @@ local success, failure = xpcall(function()
     Options.SilentMethod:SetValue("Raycast")
     Options.SilentHitChance:SetValue(100)
     Options.SilentRadius:SetValue(130)
+    SilentEngine.Settings.Enabled=false
     notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
 end, function(err) return tostring(err) end)
 if not success then
