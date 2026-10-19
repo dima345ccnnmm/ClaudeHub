@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.1 | Ordinary Obsidian (deividcomsono, MIT).
--- Ordinary Obsidian. Optional role-data queries and gun-only shot redirection.
-local VERSION = "0.1.1"
+-- ClaudeHub MM2 v0.1.2 | Ordinary Obsidian (deividcomsono, MIT).
+-- Ordinary Obsidian. Silent Aim Raycast port: Averiias, Stefanuk12, xaxa.
+local VERSION = "0.1.2"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -443,62 +443,122 @@ local function updateMovement()
     elseif next(pools.Noclip) then restore(pools.Noclip) end
 end
 
+-- Raycast selection/direction/namecall logic adapted from the user-provided
+-- Universal Silent Aim by Averiias, Stefanuk12, xaxa (main.lua).
+-- Original standalone Linoria UI, Drawing objects, file handling, legacy-ray
+-- and Mouse.Hit/Target hooks are intentionally not included.
 local silentState
 local silentStatus
+local ExpectedArguments={
+    Raycast={ArgCountRequired=3,Args={"Instance","Vector3","Vector3","RaycastParams"}}
+}
+local silentRandom=Random.new()
+local function CalculateChance(percentage)
+    percentage=math.clamp(tonumber(percentage) or 0,0,100)
+    if percentage<=0 then return false end
+    if percentage>=100 then return true end
+    return silentRandom:NextNumber(0,100)<percentage
+end
+local function ValidateArguments(args,rayMethod)
+    local count=args.n or #args
+    if count<rayMethod.ArgCountRequired or count>#rayMethod.Args then return false end
+    for index=1,rayMethod.ArgCountRequired do
+        if typeof(args[index])~=rayMethod.Args[index] then return false end
+    end
+    for index=rayMethod.ArgCountRequired+1,count do
+        if args[index]~=nil and typeof(args[index])~=rayMethod.Args[index] then return false end
+    end
+    return true
+end
+local function getDirection(origin,position)
+    local offset=position-origin
+    if offset.Magnitude<0.001 then return nil end
+    return offset.Unit*1000
+end
+local function getMousePosition()
+    return UIS:GetMouseLocation()
+end
+local function IsPlayerVisible(target,camera,targetPart)
+    local targetCharacter=target.Character
+    local localCharacter=player.Character
+    if not targetCharacter or not localCharacter or not targetPart then return false end
+    local castPoints={targetPart.Position}
+    local ignoreList={localCharacter,targetCharacter}
+    if markerFolder then table.insert(ignoreList,markerFolder) end
+    local obscuring=camera:GetPartsObscuringTarget(castPoints,ignoreList)
+    return #obscuring==0
+end
+local function getClosestPlayer()
+    local camera=workspace.CurrentCamera
+    if not camera then return nil end
+    local closest,distanceToMouse
+    local mousePosition=getMousePosition()
+    for _,target in ipairs(Players:GetPlayers()) do
+        if target==player then continue end
+        if on("SilentTeamCheck") and target.Team~=nil and target.Team==player.Team then continue end
+        local c,h,root=character(target)
+        if not c or not h or not root then continue end
+        local selected=val("SilentPoint","HumanoidRootPart")
+        if selected=="Random" then
+            selected=({"Head","HumanoidRootPart"})[silentRandom:NextInteger(1,2)]
+        end
+        local hitPart=c:FindFirstChild(selected)
+        if not hitPart or not hitPart:IsA("BasePart") then continue end
+        if on("SilentVisibleCheck") and not IsPlayerVisible(target,camera,hitPart) then continue end
+        -- WorldToScreenPoint and GetMouseLocation both include the GUI inset,
+        -- matching the source script's mouse-centered selection.
+        local screen,onScreen=camera:WorldToScreenPoint(root.Position)
+        if not onScreen or screen.Z<=0 then continue end
+        local distance=(mousePosition-Vector2.new(screen.X,screen.Y)).Magnitude
+        if distance<=(distanceToMouse or val("SilentRadius",130)) then
+            closest=hitPart;distanceToMouse=distance
+        end
+    end
+    return closest
+end
 local function stopSilent()
     if silentState then silentState.Resolve=nil end
 end
-local function silentPoint(remote,method,args)
-    if closed or not ready or not on("SilentAim") or menuBusy() or cameraState then return end
-    if method~="InvokeServer" or args[1]~=1 or typeof(args[2])~="Vector3" then return end
-    local c,_,root=character(player)
-    local gun=c and c:FindFirstChild("Gun")
-    if not gun or not gun:IsA("Tool") or not remote:IsDescendantOf(gun) then return end
-    if remote.Name~="RemoteFunction" or not remote.Parent or remote.Parent.Name~="CreateBeam" then return end
-    if not remote:IsA("RemoteFunction") then return end
+local function redirectRaycast(arguments)
+    if closed or not ready or not on("SilentAim") or menuBusy() or cameraState then return nil end
+    if val("SilentMethod","Raycast")~="Raycast" then return nil end
+    if not character(player) then return nil end
     local camera=workspace.CurrentCamera
-    if not camera or camera.CameraType==Enum.CameraType.Scriptable then return end
-    local subject=camera.CameraSubject
-    if not subject or not (subject==c or subject:IsDescendantOf(c)) then return end
-    local selected,point,model,best
-    for _,p in ipairs(Players:GetPlayers()) do
-        local at,pixels,body=aimCandidate(p,camera,1,"Silent")
-        if at and (not best or pixels<best) then selected,point,model,best=p,at,body,pixels end
-    end
-    if not point then return end
-    local handle=gun:FindFirstChild("Handle")
-    local origin=handle and handle:IsA("BasePart") and handle.Position or root.Position
-    local ray=RaycastParams.new();ray.FilterType=Enum.RaycastFilterType.Exclude
-    ray.FilterDescendantsInstances={c,markerFolder};ray.IgnoreWater=true
-    local hit=workspace:Raycast(origin,point-origin,ray)
-    if hit and not hit.Instance:IsDescendantOf(model) then return end
-    return point
+    if not camera or camera.CameraType==Enum.CameraType.Scriptable then return nil end
+    if not ValidateArguments(arguments,ExpectedArguments.Raycast) then return nil end
+    if not CalculateChance(val("SilentHitChance",100)) then return nil end
+    local hitPart=getClosestPlayer()
+    if hitPart then return getDirection(arguments[2],hitPart.Position) end
 end
 local function startSilent()
-    if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" then
-        return false,"hookmetamethod / getnamecallmethod unavailable"
+    if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" then
+        return false,"hookmetamethod / getnamecallmethod / checkcaller unavailable"
     end
-    local state=env.__ClaudeHubMM2SilentHook
+    local state=env.__ClaudeHubMM2SilentRaycastHook
     if not state or not state.Installed then
         state={}
-        local previous
+        local oldNamecall
         local methodName=getnamecallmethod
-        local isCaller=type(checkcaller)=="function" and checkcaller or nil
-        local function intercept(self,...)
-            local args=table.pack(...)
+        local isCaller=checkcaller
+        local function intercept(...)
+            local arguments=table.pack(...)
+            local self=arguments[1]
             local resolver=state.Resolve
-            if resolver and methodName()=="InvokeServer" and (not isCaller or not isCaller()) then
-                local ok,point=pcall(resolver,self,methodName(),args)
-                if ok and point then args[2]=point end
+            if resolver and self==workspace and methodName()=="Raycast" and not isCaller() then
+                local ok,direction=pcall(resolver,arguments)
+                if ok and direction then
+                    arguments[3]=direction
+                    return oldNamecall(table.unpack(arguments,1,arguments.n))
+                end
             end
-            return previous(self,table.unpack(args,1,args.n))
+            return oldNamecall(...)
         end
         local wrap=type(newcclosure)=="function" and newcclosure or function(fn) return fn end
-        local ok,old=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
-        if not ok or type(old)~="function" then return false,tostring(old) end
-        previous=old;state.Installed=true;env.__ClaudeHubMM2SilentHook=state
+        local ok,previous=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
+        if not ok or type(previous)~="function" then return false,tostring(previous) end
+        oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentRaycastHook=state
     end
-    silentState=state;state.Resolve=silentPoint
+    silentState=state;state.Resolve=redirectRaycast
     return true
 end
 
@@ -582,7 +642,7 @@ local success, failure = xpcall(function()
     info:AddLabel("Gameplay features start disabled")
     info:AddLabel("No anticheat bypass")
     info:AddLabel("UI: deividcomsono (MIT)")
-    info:AddLabel("Soft aim / separate Silent Aim / role data")
+    info:AddLabel("Silent Aim: Averiias / Stefanuk12 / xaxa")
     local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
     toggle(char, "Speed", "WalkSpeed", "V")
     slider(char, "WalkSpeed", "Speed", 20, 0, 120)
@@ -663,18 +723,20 @@ local success, failure = xpcall(function()
     evidence:AddLabel("Murderer: red. Sheriff/Hero: blue.")
     evidence:AddLabel("Auto: round events/flags. Manual fallback in Visuals.")
     evidence:AddLabel("No role data: unknown stays gray.")
-    local silentBox=Tabs.Silent:AddLeftGroupbox("Gun redirection","crosshair")
-    toggle(silentBox,"SilentAim","Silent Aim","B")
-    silentBox:AddDropdown("SilentRole",{Text="Target filter",Values={"Murderer","Sheriff / Hero","Any visible player"},Default=1})
-    silentBox:AddDropdown("SilentPoint",{Text="Aim point",Values={"UpperTorso","Head","HumanoidRootPart"},Default=1})
-    slider(silentBox,"SilentRadius","Radius (pixels)",140,25,400)
-    slider(silentBox,"SilentRange","Distance (studs)",220,20,600)
-    slider(silentBox,"SilentPrediction","Movement prediction",0,0,0.2,2)
+    local silentBox=Tabs.Silent:AddLeftGroupbox("Main","crosshair")
+    toggle(silentBox,"SilentAim","Enabled","B")
+    toggle(silentBox,"SilentTeamCheck","Team Check")
+    toggle(silentBox,"SilentVisibleCheck","Visible Check")
+    Toggles.SilentVisibleCheck:SetValue(true)
+    silentBox:AddDropdown("SilentPoint",{Text="Target Part",Values={"HumanoidRootPart","Head","Random"},Default=1})
+    silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"Raycast"},Default=1})
+    slider(silentBox,"SilentHitChance","Hit chance",100,0,100)
+    slider(silentBox,"SilentRadius","FOV Radius (pixels)",130,0,360)
     silentStatus=silentBox:AddLabel("Silent Aim: off")
-    local silentInfo=Tabs.Silent:AddRightGroupbox("Compatibility","info")
-    silentInfo:AddLabel("Separate from camera Aim Assist. Shoot manually.")
-    silentInfo:AddLabel("Gun/CreateBeam/RemoteFunction protocol only.")
-    silentInfo:AddLabel("Requires supported namecall hooks; visibility checked.")
+    local silentInfo=Tabs.Silent:AddRightGroupbox("Credits","info")
+    silentInfo:AddLabel("Universal Silent Aim")
+    silentInfo:AddLabel("Averiias / Stefanuk12 / xaxa")
+    silentInfo:AddLabel("Raycast port from the supplied main.lua")
     local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
     servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
     servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
@@ -917,7 +979,7 @@ local success, failure = xpcall(function()
         if not ok then
             Toggles.SilentAim:SetValue(false);notify("Silent Aim unavailable: "..tostring(reason));return
         end
-        silentStatus:SetText("Hook active; waiting for supported gun shot")
+        silentStatus:SetText("Raycast hook active")
     end)
     Options.RoundDetection:OnChanged(function() roles={};rolesAt=-math.huge;rolePollAt=-math.huge;rolesGeneration+=1;resetCombat() end)
     for _,object in ipairs(ReplicatedStorage:GetDescendants()) do bindRoundRemote(object) end
@@ -1089,6 +1151,13 @@ local success, failure = xpcall(function()
     ready = true
     for _,id in ipairs({"Fly","Noclip","SilentAim"}) do Toggles[id]:SetValue(false) end
     Options.RoundDetection:SetValue("Auto")
+    -- Match the supplied MM2 preset at startup, including after an older config.
+    Toggles.SilentTeamCheck:SetValue(false)
+    Toggles.SilentVisibleCheck:SetValue(true)
+    Options.SilentPoint:SetValue("HumanoidRootPart")
+    Options.SilentMethod:SetValue("Raycast")
+    Options.SilentHitChance:SetValue(100)
+    Options.SilentRadius:SetValue(130)
     notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
 end, function(err) return tostring(err) end)
 if not success then
