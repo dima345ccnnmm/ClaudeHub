@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.4 | Ordinary Obsidian (deividcomsono, MIT).
+-- ClaudeHub MM2 v0.1.5 | Ordinary Obsidian (deividcomsono, MIT).
 -- Ordinary Obsidian. Full Silent Aim port: Averiias, Stefanuk12, xaxa.
-local VERSION = "0.1.4"
+local VERSION = "0.1.5"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -158,7 +158,7 @@ local function startCamera(mode)
     smoothCamera = nil
     return true
 end
-local roleColors={Knife=Color3.fromRGB(255,90,100),Gun=Color3.fromRGB(80,165,255),Innocent=Color3.fromRGB(80,225,120),Unknown=Color3.fromRGB(175,175,185)}
+local roleColors={Knife=Color3.fromRGB(255,90,100),Gun=Color3.fromRGB(80,165,255),Hero=Color3.fromRGB(255,200,70),Innocent=Color3.fromRGB(80,225,120),Unknown=Color3.fromRGB(175,175,185)}
 local roles,rolesAt,rolesBusy,rolesGeneration={},-math.huge,false,0
 local roundSignal=nil
 local roundConnections={}
@@ -215,7 +215,7 @@ end
 local rolePollAt=-math.huge
 local function pollRoles()
     if rolesBusy or os.clock()-rolePollAt<2 then return end
-    if not (on("ESP") or on("AimAssist") or on("SilentAim")) then return end
+    if not (on("ESP") or on("AimAssist") or on("SilentAim") or on("MurderWarning") or on("HUD")) then return end
     rolePollAt=os.clock()
     local remote=ReplicatedStorage:FindFirstChild("GetPlayerData",true)
     if not remote or not remote:IsA("RemoteFunction") then return end
@@ -244,7 +244,7 @@ local function roleHint(p)
     if row and (row.Dead or row.Killed) then return "Unknown","Eliminated",roleColors.Unknown end
     if row then
         if row.Role=="Murderer" then return "Knife","Murderer",roleColors.Knife end
-        if row.Role=="Sheriff" or row.Role=="Hero" then return "Gun",row.Role,roleColors.Gun end
+        if row.Role=="Sheriff" or row.Role=="Hero" then return "Gun",row.Role,row.Role=="Hero" and roleColors.Hero or roleColors.Gun end
         if row.Role=="Innocent" then return "Innocent","Innocent",roleColors.Innocent end
     end
     local knife,gun=toolsIn(p.Character)
@@ -252,6 +252,20 @@ local function roleHint(p)
     if knife and not gun then return "Knife","Knife seen",roleColors.Knife end
     if gun and not knife then return "Gun","Gun seen",roleColors.Gun end
     return "Unknown","Unknown",roleColors.Unknown
+end
+
+local function roleTargetAllowed(target,filter)
+    if not inRound(player) or not inRound(target) then return false end
+    local targetRole=roleHint(target)
+    if filter=="Auto" then
+        local ownRole=roleHint(player)
+        if ownRole=="Knife" then return targetRole=="Gun" end
+        if ownRole=="Gun" then return targetRole=="Knife" end
+        return false
+    end
+    if filter=="Murderer" then return targetRole=="Knife" end
+    if filter=="Sheriff / Hero" then return targetRole=="Gun" end
+    return filter=="Any visible player" and targetRole~="Unknown"
 end
 
 local function observedAttribute(keys)
@@ -290,13 +304,16 @@ local function rememberGun(object)
 end
 local function scanGuns()
     clearGuns()
-    if on("GunESP") then for _,object in ipairs(workspace:GetDescendants()) do rememberGun(object) end end
+    for _,object in ipairs(workspace:GetDescendants()) do rememberGun(object) end
 end
 local function updateGuns()
-    if not on("GunESP") then if next(gunObjects) then clearGuns() end;return end
     local camera=workspace.CurrentCamera
     for object,entry in pairs(gunObjects) do
         if not object:IsDescendantOf(workspace) or gunInInventory(object) then clearGunEntry(object);continue end
+        if not on("GunESP") then
+            if entry.Highlight then entry.Highlight:Destroy();entry.Gui:Destroy();entry.Highlight=nil;entry.Gui=nil end
+            continue
+        end
         local part=object:IsA("BasePart") and object or object:FindFirstChild("Handle",true)
         if not part or not part:IsA("BasePart") then part=object:FindFirstChildWhichIsA("BasePart",true) end
         local distance=part and camera and (part.Position-camera.CFrame.Position).Magnitude
@@ -363,7 +380,7 @@ local function aimCandidate(p,camera,radiusMultiplier,settingsPrefix)
     return point,pixels,c
 end
 local function chooseAimTarget(camera)
-    if combatTarget then
+    if on("AimSticky") and combatTarget then
         local point,_,model=aimCandidate(combatTarget,camera,1.1)
         if point then return combatTarget,point,model end
     end
@@ -387,6 +404,7 @@ local function stopFly()
     restore(pools.Fly)
 end
 local function startFly()
+    if on("SelfRagdoll") then Toggles.SelfRagdoll:SetValue(false) end
     stopFly()
     local _,h,r=character(player)
     if not h or r.Anchored or h.Sit then return false end
@@ -450,7 +468,7 @@ local SilentEngine=(function()
         Settings={Enabled=false,ClassName="Universal Silent Aim - Averiias, Stefanuk12, xaxa",
             ToggleKey="B",TeamCheck=false,VisibleCheck=true,TargetPart="HumanoidRootPart",SilentAimMethod="Raycast",
             FOVRadius=130,FOVVisible=false,ShowSilentAimTarget=false,MouseHitPrediction=false,
-            MouseHitPredictionAmount=0.165,HitChance=100},
+            MouseHitPredictionAmount=0.165,HitChance=100,TargetRole="Auto"},
         Color=Color3.fromRGB(54,57,241),TargetColor=Color3.fromRGB(54,57,241),
         LastError="",Seen=0,Redirected=0,CameraFilterAvailable=type(getcallingscript)=="function",
         ConfigPaths={},OwnedStates={},Destroyed=false,
@@ -494,11 +512,13 @@ local SilentEngine=(function()
     end
     local function getClosestPlayer()
         local camera=workspace.CurrentCamera
-        if not camera then return nil end
+        if not camera then engine.Target=nil;return nil end
         local closest,distanceToMouse
+        local previous=on("SilentSticky") and engine.Target or nil
+        engine.Target=nil
         local mousePosition=getMousePosition()
         for _,target in ipairs(Players:GetPlayers()) do
-            if target==player then continue end
+            if target==player or not roleTargetAllowed(target,engine.Settings.TargetRole) then continue end
             if engine.Settings.TeamCheck and target.Team==player.Team then continue end
             local c,h,root=character(target)
             if not c or not h or not root then continue end
@@ -510,8 +530,11 @@ local SilentEngine=(function()
             local point,onScreen=camera:WorldToScreenPoint(root.Position)
             if not onScreen or point.Z<=0 then continue end
             local distance=(mousePosition-Vector2.new(point.X,point.Y)).Magnitude
-            if distance<=(distanceToMouse or engine.Settings.FOVRadius) then
-                closest=part;distanceToMouse=distance
+            if distance<=engine.Settings.FOVRadius then
+                if target==previous then engine.Target=target;return part end
+                if not distanceToMouse or distance<distanceToMouse then
+                    closest=part;distanceToMouse=distance;engine.Target=target
+                end
             end
         end
         return closest
@@ -577,7 +600,13 @@ local SilentEngine=(function()
     local function recordError(err)
         engine.LastError=tostring(err):sub(1,220)
     end
+    function engine:RefreshTarget()
+        if active() then return getClosestPlayer() end
+        self.Target=nil
+        return nil
+    end
     function engine:Stop()
+        self.Target=nil
         self.Settings.Enabled=false
         for _,state in pairs(self.OwnedStates) do
             if state.Owner==self then state.Resolve=nil;state.RecordError=nil;state.Owner=nil end
@@ -761,51 +790,27 @@ end)()
 local silentStatus
 local function stopSilent() SilentEngine:Stop() end
 
-local antiFlingRoot,antiFlingSafe,antiFlingSafeAt
-local antiFlingScanAt=-math.huge
-local function clearAntiFling()
-    restore(pools.AntiFling)
-    antiFlingRoot,antiFlingSafe,antiFlingSafeAt=nil,nil,nil
-    antiFlingScanAt=-math.huge
-end
+local function clearAntiFling() restore(pools.AntiFling) end
 local function updateAntiFling()
     if not ready or not on("AntiFling") then
-        if next(pools.AntiFling) or antiFlingRoot then clearAntiFling() end
+        if next(pools.AntiFling) then clearAntiFling() end
         return
     end
-    local c,h,r=character(player)
-    if not c then clearAntiFling();return end
-    if antiFlingRoot~=r then clearAntiFling();antiFlingRoot=r end
-    if os.clock()-antiFlingScanAt>=0.2 then
-        antiFlingScanAt=os.clock()
-        local accepted={}
-        for _,other in ipairs(Players:GetPlayers()) do
-            if other==player or not other.Character then continue end
-            for _,part in ipairs(other.Character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    accepted[part]=true
-                    if part.CanCollide or pools.AntiFling[part] then override(pools.AntiFling,part,"CanCollide",false) end
-                end
+    local accepted={}
+    for _,other in ipairs(Players:GetPlayers()) do
+        if other==player or not other.Character then continue end
+        for _,part in ipairs(other.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                accepted[part]=true
+                override(pools.AntiFling,part,"CanCollide",false)
             end
         end
-        local stale={}
-        for object in pairs(pools.AntiFling) do if not accepted[object] then stale[object]=pools.AntiFling[object];pools.AntiFling[object]=nil end end
-        restore(stale)
     end
-    for part in pairs(pools.AntiFling) do
-        if part.Parent then override(pools.AntiFling,part,"CanCollide",false) end
+    local stale={}
+    for object,fields in pairs(pools.AntiFling) do
+        if not accepted[object] then stale[object]=fields;pools.AntiFling[object]=nil end
     end
-    if r.Anchored or h.Sit then return end
-    local speed=r.AssemblyLinearVelocity.Magnitude
-    local spin=r.AssemblyAngularVelocity.Magnitude
-    if speed>val("FlingSpeedLimit",180) or spin>val("FlingSpinLimit",60) then
-        r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
-        if on("FlingRecovery") and not on("Fly") and antiFlingSafe and os.clock()-antiFlingSafeAt<2 then
-            r.CFrame=antiFlingSafe
-        end
-    elseif not on("Fly") and h.FloorMaterial~=Enum.Material.Air and speed<80 and spin<15 then
-        antiFlingSafe=r.CFrame;antiFlingSafeAt=os.clock()
-    end
+    restore(stale)
 end
 local grabState
 local function finishGrab()
@@ -871,7 +876,7 @@ local function grabGun()
 end
 
 local function jumpNow()
-    if not ready or not on("InfiniteJump") or on("Freecam") or on("Fly") or menuBusy() or os.clock()-lastJump < 0.12 then return end
+    if not ready or not on("InfiniteJump") or on("Freecam") or on("Spectate") or on("SelfRagdoll") or on("Fly") or menuBusy() or os.clock()-lastJump < 0.12 then return end
     local _,h,r = character(player)
     if not h or r.Anchored or h.Sit then return end
     lastJump = os.clock()
@@ -879,10 +884,299 @@ local function jumpNow()
     local velocity = r.AssemblyLinearVelocity
     r.AssemblyLinearVelocity = Vector3.new(velocity.X, val("JumpVelocity",50), velocity.Z)
 end
+-- Movement mechanics adapted from the user's universal ClaudeHub.
+local Movement=(function()
+    local m={Root=nil,Humanoid=nil,Safe=nil,Points={},PointMap={},Generation=0,PathBusy=false,
+        PathAt=-math.huge,Nodes=nil,Node=1,FollowPoint=nil,LastWallhop=-math.huge}
+    local owned={Jump={},Gravity={},Ragdoll={},Wallhop={}}
+    local joints={}
+    local pad,padConnection,lastLaunch
+    local pendingHop
+    local function held(id,fallback)
+        local key=val(id,fallback)
+        if type(key)~="string" or key=="None" then return false end
+        local ok,value=pcall(function() return UIS:IsKeyDown(Enum.KeyCode[key]) end)
+        return ok and value
+    end
+    function m:EndWallhop()
+        if pendingHop then
+            local state=pendingHop;pendingHop=nil
+            pcall(function()
+                if state.Root.Parent and state.Root.CFrame.LookVector:Dot(state.Applied.LookVector)>0.98 then
+                    state.Root.CFrame=CFrame.new(state.Root.Position)*state.Rotation
+                end
+            end)
+        end
+        restore(owned.Wallhop)
+    end
+    function m:ClearRagdoll()
+        for _,joint in ipairs(joints) do
+            joint.Socket:Destroy();joint.A0:Destroy();joint.A1:Destroy()
+        end
+        table.clear(joints);restore(owned.Ragdoll)
+    end
+    function m:Ragdoll(c,h)
+        if #joints>0 then return end
+        -- Neck remains connected; disabling it can kill RequiresNeck avatars.
+        for _,motor in ipairs(c:GetDescendants()) do
+            if motor:IsA("Motor6D") and motor.Name~="Neck" and motor.Enabled and motor.Part0 and motor.Part1 then
+                local a0=Instance.new("Attachment",motor.Part0);a0.CFrame=motor.C0
+                local a1=Instance.new("Attachment",motor.Part1);a1.CFrame=motor.C1
+                local socket=Instance.new("BallSocketConstraint",motor.Part0)
+                socket.Attachment0=a0;socket.Attachment1=a1
+                socket.LimitsEnabled=true;socket.TwistLimitsEnabled=true
+                table.insert(joints,{Socket=socket,A0=a0,A1=a1})
+                override(owned.Ragdoll,motor,"Enabled",false)
+            end
+        end
+        override(owned.Ragdoll,h,"PlatformStand",true)
+    end
+    function m:StopFollow()
+        self.Generation+=1;self.Nodes=nil;self.FollowPoint=nil;self.PathAt=-math.huge
+        if self.FollowHumanoid and self.FollowHumanoid.Parent then
+            local root=self.FollowHumanoid.Parent:FindFirstChild("HumanoidRootPart")
+            if root then pcall(function() self.FollowHumanoid:MoveTo(root.Position) end) end
+        end
+        self.FollowHumanoid=nil
+    end
+    function m:Reset()
+        self:EndWallhop();self:ClearRagdoll();self:StopFollow()
+        self.Safe=nil;self.Root=nil;self.Humanoid=nil
+        restore(owned.Jump)
+    end
+    function m:RemovePad()
+        if padConnection then padConnection:Disconnect();padConnection=nil end
+        if pad then pad:Destroy();pad=nil end
+    end
+    function m:Destroy()
+        self:Reset();self:RemovePad()
+        for _,pool in pairs(owned) do restore(pool) end
+        table.clear(self.Points);table.clear(self.PointMap)
+    end
+    function m:Wallhop()
+        if not ready or not on("FakeWallhop") or menuBusy() or cameraState or on("Fly") or on("SelfRagdoll") then return false end
+        local c,h,r=character(player)
+        if not r or r.Anchored or h.Sit or h.FloorMaterial~=Enum.Material.Air then return false end
+        if os.clock()-self.LastWallhop<0.18 then return true end
+        local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
+        local ignore={c}
+        if markerFolder then table.insert(ignore,markerFolder) end
+        for _,other in ipairs(Players:GetPlayers()) do
+            if other~=player and other.Character then table.insert(ignore,other.Character) end
+        end
+        params.FilterDescendantsInstances=ignore;params.IgnoreWater=true
+        local wall=false
+        for index=0,7 do
+            local angle=index*math.pi/4
+            local hit=workspace:Raycast(r.Position,Vector3.new(math.cos(angle),0,math.sin(angle))*val("WallhopReach",3.2),params)
+            if hit and hit.Instance and hit.Instance:IsA("BasePart") and hit.Instance.CanCollide
+                and hit.Normal and math.abs(hit.Normal.Y)<0.35 and not Players:GetPlayerFromCharacter(hit.Instance:FindFirstAncestorOfClass("Model")) then wall=true;break end
+        end
+        if not wall then return false end
+        self:EndWallhop();self.LastWallhop=os.clock();lastJump=os.clock()
+        local rotation=r.CFrame.Rotation
+        local sign=val("WallhopSide","Left")=="Right" and -1 or 1
+        local applied=rotation*CFrame.Angles(0,sign*math.rad(80),0)
+        pendingHop={Root=r,Rotation=rotation,Applied=applied,Until=os.clock()+0.075}
+        override(owned.Wallhop,h,"AutoRotate",false)
+        r.CFrame=CFrame.new(r.Position)*applied
+        local velocity=r.AssemblyLinearVelocity
+        h:ChangeState(Enum.HumanoidStateType.Jumping)
+        r.AssemblyLinearVelocity=Vector3.new(velocity.X,val("JumpVelocity",50),velocity.Z)
+        return true
+    end
+    function m:Launch()
+        if not focused or UIS:GetFocusedTextBox() or cameraState or on("Fly") or on("SelfRagdoll") then return end
+        local _,h,r=character(player)
+        if r and not r.Anchored and not h.Sit then
+            local power=val("SelfFlingPower",120)
+            h:ChangeState(Enum.HumanoidStateType.Freefall)
+            r.AssemblyLinearVelocity=Vector3.new((math.random()-0.5)*power,power,(math.random()-0.5)*power)
+        end
+    end
+    function m:PlacePad()
+        local _,_,r=character(player);if not r then return end
+        self:RemovePad()
+        pad=Instance.new("Part");pad.Name="ClaudeHubMM2_SelfLaunchPad"
+        pad.Anchored=true;pad.CanCollide=true;pad.Size=Vector3.new(6,1,6)
+        pad.Material=Enum.Material.Neon;pad.Color=Color3.fromRGB(150,100,255)
+        pad.CFrame=CFrame.new(r.Position-Vector3.new(0,3,0));pad.Parent=workspace
+        lastLaunch=-math.huge
+        padConnection=pad.Touched:Connect(function(hit)
+            if not ready or not on("PadEnabled") or cameraState or menuBusy() or on("Fly") or on("SelfRagdoll") then return end
+            local c,h,root=character(player)
+            if not c or not hit:IsDescendantOf(c) or root.Anchored or h.Sit or os.clock()-lastLaunch<0.5 then return end
+            lastLaunch=os.clock();local velocity=root.AssemblyLinearVelocity
+            h:ChangeState(Enum.HumanoidStateType.Freefall)
+            root.AssemblyLinearVelocity=Vector3.new(velocity.X,val("PadPower",150),velocity.Z)
+        end)
+    end
+    function m:Follow(c,h,r)
+        local target
+        for _,p in ipairs(Players:GetPlayers()) do if tostring(p.UserId)==self.PointMap[val("FollowPlayer","")] then target=p;break end end
+        local other
+        if target then local _,_,root=character(target);other=root end
+        if not other or target==player or menuBusy() or cameraState or on("Fly") or on("SelfRagdoll") then
+            if self.FollowHumanoid then self:StopFollow() end
+            return
+        end
+        self.FollowHumanoid=h
+        local delta=other.Position-r.Position
+        if delta.Magnitude<=val("FollowDistance",5) then
+            self.FollowPoint=nil;self.Nodes=nil;h:MoveTo(r.Position);return
+        end
+        if delta.Magnitude>250 then self:StopFollow();return end
+        if not self.PathBusy and os.clock()-self.PathAt>=1 then
+            self.PathBusy=true;self.PathAt=os.clock()
+            local generation=self.Generation;local origin=r.Position;local goal=other.Position
+            task.spawn(function()
+                local ok,nodes=pcall(function()
+                    local path=game:GetService("PathfindingService"):CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true})
+                    path:ComputeAsync(origin,goal)
+                    if path.Status==Enum.PathStatus.Success then return path:GetWaypoints() end
+                end)
+                self.PathBusy=false
+                if closed or not ready or generation~=self.Generation or self.Root~=r then return end
+                self.Nodes=ok and nodes or nil;self.Node=2
+            end)
+        end
+        local node=self.Nodes and self.Nodes[self.Node]
+        while node and (node.Position-r.Position).Magnitude<3 do self.Node+=1;node=self.Nodes[self.Node] end
+        self.FollowPoint=node and node.Position or other.Position
+        if node and node.Action==Enum.PathWaypointAction.Jump then h.Jump=true end
+        h:MoveTo(self.FollowPoint)
+    end
+    function m:Update()
+        if not ready then return end
+        local c,h,r=character(player)
+        if r~=self.Root then self:Reset();self.Root=r;self.Humanoid=h end
+        if on("CustomGravity") then override(owned.Gravity,workspace,"Gravity",val("GravityValue",196.2))
+        elseif next(owned.Gravity) then restore(owned.Gravity) end
+        if pendingHop and (os.clock()>=pendingHop.Until or not on("FakeWallhop") or on("Fly") or cameraState) then self:EndWallhop() end
+        if not r then restore(pools.Speed);return end
+        local blocked=menuBusy() or cameraState or on("Fly") or r.Anchored or h.Sit
+        if on("SelfRagdoll") and not blocked then self:Ragdoll(c,h)
+        elseif next(owned.Ragdoll) then self:ClearRagdoll() end
+        if on("JumpPower") and not blocked and not on("SelfRagdoll") then
+            override(owned.Jump,h,"UseJumpPower",true);override(owned.Jump,h,"JumpPower",val("JumpPowerValue",80))
+        elseif next(owned.Jump) then restore(owned.Jump) end
+        for object in pairs(pools.Speed) do if object~=h then restore(pools.Speed);break end end
+        local sprint=on("Sprint") and held("SprintKey","LeftShift") and h.MoveDirection.Magnitude>0.05
+        if not blocked and not on("SelfRagdoll") and (on("Speed") or sprint) then
+            local baseline=pools.Speed[h] and pools.Speed[h].WalkSpeed.Base or h.WalkSpeed
+            local speed=on("Speed") and val("WalkSpeed",20) or baseline
+            if sprint then speed=math.max(speed,val("SprintSpeed",28)) end
+            override(pools.Speed,h,"WalkSpeed",speed)
+        elseif next(pools.Speed) then restore(pools.Speed) end
+        if on("AutoFollow") and not blocked and not on("SelfRagdoll") then self:Follow(c,h,r)
+        elseif self.FollowHumanoid then self:StopFollow() end
+        if on("NoAcceleration") and not blocked and not on("SelfRagdoll") then
+            local direction=h.MoveDirection
+            if self.FollowPoint then
+                local delta=self.FollowPoint-r.Position;direction=Vector3.new(delta.X,0,delta.Z)
+                if direction.Magnitude>0.05 then direction=direction.Unit end
+            end
+            local velocity=r.AssemblyLinearVelocity;local move=direction*h.WalkSpeed
+            r.AssemblyLinearVelocity=Vector3.new(move.X,velocity.Y,move.Z)
+        end
+        local round=inRound(player)
+        if self.Round~=round then self.Safe=nil;self.Round=round end
+        local threshold=val("AntiVoidHeight",-50)
+        if on("AntiVoid") and not blocked and not on("SelfRagdoll") then
+            if r.Position.Y>threshold+5 and h.FloorMaterial~=Enum.Material.Air then self.Safe=r.CFrame end
+            if self.Safe and r.Position.Y<=threshold then
+                r.CFrame=self.Safe;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
+                h:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        else self.Safe=nil end
+    end
+    function m:Build(tab,toggle,slider,action)
+        local movement=tab:AddLeftGroupbox("Jump / Sprint","footprints")
+        toggle(movement,"JumpPower","Jump Power")
+        slider(movement,"JumpPowerValue","Power",80,20,300)
+        local sprint=toggle(movement,"Sprint","Sprint")
+        sprint:AddKeyPicker("SprintKey",{Default="LeftShift",Mode="Hold",NoUI=true,Text="Sprint",SyncToggleState=false})
+        slider(movement,"SprintSpeed","Sprint speed",28,16,120)
+        toggle(movement,"NoAcceleration","No Acceleration")
+        local wall=tab:AddLeftGroupbox("Fake Wallhop","arrow-up")
+        toggle(wall,"FakeWallhop","Fake Wallhop")
+        wall:AddDropdown("WallhopSide",{Text="Turn direction",Values={"Left","Right"},Default=1})
+        slider(wall,"WallhopReach","Wall distance",3.2,1,5,1)
+        local gravity=tab:AddLeftGroupbox("Gravity / Anti Void","arrow-down")
+        toggle(gravity,"CustomGravity","Gravity")
+        slider(gravity,"GravityValue","Gravity",workspace.Gravity,0,400)
+        toggle(gravity,"AntiVoid","Anti Void")
+        slider(gravity,"AntiVoidHeight","Void Y",-50,-500,0)
+        local tp=tab:AddRightGroupbox("Click Teleport / Waypoints","map-pin")
+        local click=toggle(tp,"ClickTP","Click TP")
+        click:AddKeyPicker("ClickTPModifier",{Default="LeftControl",Mode="Hold",NoUI=true,Text="Click TP modifier",SyncToggleState=false})
+        tp:AddInput("WaypointName",{Text="Waypoint name",Default="",Finished=true})
+        tp:AddDropdown("WaypointList",{Text="Saved positions",Values={},AllowNull=true})
+        local function refresh()
+            local names={};for name in pairs(self.Points) do table.insert(names,name) end;table.sort(names)
+            Options.WaypointList:SetValues(names)
+            if not self.Points[val("WaypointList","")] then Options.WaypointList:SetValue(nil) end
+        end
+        action(tp,"Save position",function()
+            local _,_,root=character(player);local name=val("WaypointName",""):match("^%s*(.-)%s*$")
+            if not root or name=="" or #name>40 then notify("Enter a waypoint name (1-40 characters)");return end
+            self.Points[name]=root.CFrame;refresh();Options.WaypointList:SetValue(name)
+        end)
+        action(tp,"Teleport to position",function()
+            local _,_,root=character(player);local cf=self.Points[val("WaypointList","")]
+            if root and cf and not cameraState and not on("Fly") then self:StopFollow();root.CFrame=cf;root.AssemblyLinearVelocity=Vector3.zero end
+        end)
+        action(tp,"Delete position",function() self.Points[val("WaypointList","")]=nil;refresh() end)
+        local follow=tab:AddRightGroupbox("Auto Follow","navigation")
+        follow:AddDropdown("FollowPlayer",{Text="Player",Values={},AllowNull=true})
+        toggle(follow,"AutoFollow","Auto Follow")
+        slider(follow,"FollowDistance","Follow distance",5,3,30)
+        function self:RefreshPlayers()
+            local names={};table.clear(self.PointMap)
+            for _,p in ipairs(Players:GetPlayers()) do
+                if p~=player then local label=p.DisplayName.." (@"..p.Name..")";self.PointMap[label]=tostring(p.UserId);table.insert(names,label) end
+            end
+            table.sort(names);Options.FollowPlayer:SetValues(names)
+            if not self.PointMap[val("FollowPlayer","")] then Options.FollowPlayer:SetValue(nil);self:StopFollow() end
+        end
+        self:RefreshPlayers()
+        connect(Players.PlayerAdded,function() if ready then self:RefreshPlayers() end end)
+        connect(Players.PlayerRemoving,function() task.defer(function() if ready and not closed then self:RefreshPlayers() end end) end)
+        Options.FollowPlayer:OnChanged(function() self:StopFollow() end)
+        Toggles.AutoFollow:OnChanged(function() self:StopFollow() end)
+        local selfBox=tab:AddRightGroupbox("Self movement","zap")
+        toggle(selfBox,"SelfRagdoll","Self Ragdoll")
+        slider(selfBox,"SelfFlingPower","Self Fling power",120,20,500)
+        action(selfBox,"Self Fling",function() self:Launch() end)
+        toggle(selfBox,"PadEnabled","Launch Pad enabled")
+        slider(selfBox,"PadPower","Launch power",150,20,500)
+        action(selfBox,"Place Launch Pad",function() self:PlacePad() end)
+        action(selfBox,"Remove Launch Pad",function() self:RemovePad() end)
+        Toggles.SelfRagdoll:OnChanged(function()
+            if not ready then return end
+            if on("SelfRagdoll") and on("Fly") then Toggles.Fly:SetValue(false) end
+            self:ClearRagdoll();self:EndWallhop()
+        end)
+        Toggles.FakeWallhop:OnChanged(function() if not on("FakeWallhop") then self:EndWallhop() end end)
+        Toggles.JumpPower:OnChanged(function() restore(owned.Jump) end)
+        Toggles.CustomGravity:OnChanged(function() if not on("CustomGravity") then restore(owned.Gravity) end end)
+        connect(UIS.InputBegan,function(input,processed)
+            if processed or not ready or menuBusy() or cameraState or on("Fly") or on("SelfRagdoll") then return end
+            if on("ClickTP") and input.UserInputType==Enum.UserInputType.MouseButton1 and held("ClickTPModifier","LeftControl") then
+                local _,_,root=character(player);local mouse=player:GetMouse()
+                if root and mouse.Target and mouse.Hit then
+                    self:StopFollow();root.CFrame=CFrame.new(mouse.Hit.Position+Vector3.new(0,3,0));root.AssemblyLinearVelocity=Vector3.zero
+                end
+            end
+        end)
+    end
+    return m
+end)()
+
 local function cleanup()
     if closed then return end
     closed, ready = true, false
-    SilentEngine:Destroy();finishGrab();clearAntiFling();stopFly();clearRoles(nil)
+    SilentEngine:Destroy();Movement:Destroy();finishGrab();clearAntiFling();stopFly();clearRoles(nil)
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubMM2_Camera")
@@ -907,10 +1201,10 @@ local success, failure = xpcall(function()
     local Tabs = {
         Home=Window:AddTab("Home", "house"),
         Character=Window:AddTab("Character", "user"),
+        Movement=Window:AddTab("Movement", "footprints"),
         Visuals=Window:AddTab("Visuals", "eye"),
         Camera=Window:AddTab("Camera", "camera"),
-        Combat=Window:AddTab("Aim Assist", "crosshair"),
-        Silent=Window:AddTab("Silent Aim", "scan-eye"),
+        Combat=Window:AddTab("Combat", "crosshair"),
         Servers=Window:AddTab("Servers", "server"),
         Settings=Window:AddTab("Settings", "settings"),
     }
@@ -951,7 +1245,7 @@ local success, failure = xpcall(function()
     info:AddLabel("No anticheat bypass")
     info:AddLabel("UI: deividcomsono (MIT)")
     info:AddLabel("Silent Aim: Averiias / Stefanuk12 / xaxa")
-    local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
+    local char = Tabs.Movement:AddLeftGroupbox("Movement", "footprints")
     toggle(char, "Speed", "WalkSpeed", "V")
     slider(char, "WalkSpeed", "Speed", 20, 0, 120)
     toggle(char, "InfiniteJump", "Infinite Jump", "J")
@@ -959,12 +1253,16 @@ local success, failure = xpcall(function()
     toggle(char,"Fly","Fly","F")
     slider(char,"FlySpeed","Fly Speed",45,5,150)
     toggle(char,"Noclip","Noclip","N")
-    local protection=Tabs.Character:AddRightGroupbox("Protection / Pickup","shield")
+    local protection=Tabs.Character:AddLeftGroupbox("Protection","shield")
     toggle(protection,"AntiFling","Anti Fling","P")
-    slider(protection,"FlingSpeedLimit","Velocity limit",180,100,500)
-    slider(protection,"FlingSpinLimit","Spin limit",60,20,200)
-    toggle(protection,"FlingRecovery","Return to recent safe position")
-    action(protection,"Grab Gun",grabGun,"K","GrabGunBind")
+    local pickup=Tabs.Combat:AddRightGroupbox("Grab Gun","hand")
+    action(pickup,"Grab Gun",grabGun,"K","GrabGunBind")
+    local pickupStatus=pickup:AddLabel("Gun: not found")
+    local alerts=Tabs.Combat:AddRightGroupbox("Notifications","bell")
+    toggle(alerts,"GunNotification","Dropped gun notification")
+    toggle(alerts,"MurderWarning","Nearby murderer warning")
+    slider(alerts,"MurderWarningRange","Warning distance",40,10,150)
+    Movement:Build(Tabs.Movement,toggle,slider,action)
     local hudBox = Tabs.Character:AddRightGroupbox("HUD", "monitor")
     toggle(hudBox, "HUD", "MM2 HUD", "F9")
     local visuals = Tabs.Visuals:AddLeftGroupbox("Players", "users")
@@ -1027,7 +1325,8 @@ local success, failure = xpcall(function()
     toggle(targetBox,"TargetHighlight","Highlight aim target")
     Toggles.AimCircle:SetValue(true)
     targetStatus=targetBox:AddLabel("Assist: off")
-    local aimInfo=Tabs.Combat:AddRightGroupbox("How it works","info")
+    toggle(targetBox,"AimSticky","Sticky target")
+    local aimInfo=Tabs.Combat:AddRightGroupbox("Soft Aim information","info")
     aimInfo:AddLabel("Hold RMB or L2; release to stop assistance.")
     aimInfo:AddLabel("Visibility check is always enabled.")
     aimInfo:AddLabel("Camera smoothing only; no bullet/damage changes.")
@@ -1035,11 +1334,13 @@ local success, failure = xpcall(function()
     aimInfo:AddLabel("Role filters use role data or observed weapons during a round.")
     local evidence=Tabs.Home:AddRightGroupbox("Client information","info")
     evidence:AddLabel("Lobby/unconfirmed: gray. Innocent role: green.")
-    evidence:AddLabel("Murderer: red. Sheriff/Hero: blue.")
+    evidence:AddLabel("Murderer: red. Sheriff: blue. Hero: gold.")
     evidence:AddLabel("Auto: round events/flags. Manual fallback in Visuals.")
     evidence:AddLabel("No role data: unknown stays gray.")
-    local silentBox=Tabs.Silent:AddLeftGroupbox("Main","crosshair")
-    toggle(silentBox,"SilentAim","Enabled","B")
+    local silentBox=Tabs.Combat:AddRightGroupbox("Silent Aim","scan-eye")
+    toggle(silentBox,"SilentAim","Silent Aim","B")
+    silentBox:AddDropdown("SilentRole",{Text="Target role",Values={"Auto","Murderer","Sheriff / Hero"},Default=1})
+    toggle(silentBox,"SilentSticky","Sticky target")
     toggle(silentBox,"SilentTeamCheck","Team Check")
     toggle(silentBox,"SilentVisibleCheck","Visible Check")
     Toggles.SilentVisibleCheck:SetValue(true)
@@ -1047,16 +1348,17 @@ local success, failure = xpcall(function()
     silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"Raycast","FindPartOnRay","FindPartOnRayWithWhitelist","FindPartOnRayWithIgnoreList","Mouse.Hit/Target"},Default=1})
     slider(silentBox,"SilentHitChance","Hit chance",100,0,100,1)
     silentStatus=silentBox:AddLabel("Silent Aim: off")
-    local silentVisuals=Tabs.Silent:AddLeftGroupbox("Field Of View","scan-eye")
+    local silentTargetStatus=silentBox:AddLabel("Target: none")
+    local silentVisuals=Tabs.Combat:AddRightGroupbox("Silent Aim FOV","scan-eye")
     toggle(silentVisuals,"SilentFOVVisible","Show FOV Circle")
     silentVisuals:AddLabel("Circle Color"):AddColorPicker("SilentFOVColor",{Default=SilentEngine.Color,Title="Silent Aim Circle"})
     slider(silentVisuals,"SilentRadius","FOV Circle Radius",130,0,360)
     toggle(silentVisuals,"SilentShowTarget","Show Silent Aim Target")
     silentVisuals:AddLabel("Target Color"):AddColorPicker("SilentTargetColor",{Default=SilentEngine.TargetColor,Title="Silent Aim Target"})
-    local silentPrediction=Tabs.Silent:AddLeftGroupbox("Prediction","move-right")
+    local silentPrediction=Tabs.Combat:AddRightGroupbox("Silent Aim Prediction","move-right")
     toggle(silentPrediction,"SilentPredictionEnabled","Mouse.Hit/Target Prediction")
     slider(silentPrediction,"SilentPredictionAmount","Prediction Amount",0.165,0.165,1,3)
-    local silentInfo=Tabs.Silent:AddRightGroupbox("Credits / Status","info")
+    local silentInfo=Tabs.Combat:AddRightGroupbox("Credits / Status","info")
     silentInfo:AddLabel("Universal Silent Aim")
     silentInfo:AddLabel("Averiias / Stefanuk12 / xaxa")
     silentInfo:AddLabel("Full source functionality; Obsidian interface")
@@ -1064,7 +1366,7 @@ local success, failure = xpcall(function()
     silentInfo:AddLabel("Only equipped Gun/Knife scripts; unknown callers blocked")
     local silentCounter=silentInfo:AddLabel("Matching calls: 0 | redirected: 0")
     local silentError=silentInfo:AddLabel("Last error: none")
-    local configs=Tabs.Silent:AddRightGroupbox("Configurations","save")
+    local configs=Tabs.Combat:AddRightGroupbox("Configurations","save")
     configs:AddInput("SilentConfigName",{Text="Create Configuration",Default="",Finished=true})
     configs:AddDropdown("SilentConfigChoice",{Text="Saved Configuration",Values={},AllowNull=true})
     local function refreshSilentConfigs()
@@ -1119,6 +1421,9 @@ local success, failure = xpcall(function()
             if valid then Options.SilentAimBind:SetValue({key,"Toggle"}) end
         end
         if data.Enabled==true then Toggles.SilentAim:SetValue(true) end
+        if data.TargetRole=="Auto" or data.TargetRole=="Murderer" or data.TargetRole=="Sheriff / Hero" then
+            Options.SilentRole:SetValue(data.TargetRole)
+        end
         notify("Silent Aim configuration loaded")
     end)
     action(configs,"Refresh Configurations",refreshSilentConfigs)
@@ -1133,10 +1438,11 @@ local success, failure = xpcall(function()
     for id,field in pairs({SilentTeamCheck="TeamCheck",SilentVisibleCheck="VisibleCheck",SilentFOVVisible="FOVVisible",
         SilentShowTarget="ShowSilentAimTarget",SilentPredictionEnabled="MouseHitPrediction"}) do bindSilentToggle(id,field) end
     for id,field in pairs({SilentPoint="TargetPart",SilentMethod="SilentAimMethod",SilentHitChance="HitChance",
-        SilentRadius="FOVRadius",SilentPredictionAmount="MouseHitPredictionAmount"}) do bindSilentOption(id,field) end
+        SilentRadius="FOVRadius",SilentRole="TargetRole",SilentPredictionAmount="MouseHitPredictionAmount"}) do bindSilentOption(id,field) end
     Options.SilentFOVColor:OnChanged(function() SilentEngine.Color=Options.SilentFOVColor.Value end)
     Options.SilentTargetColor:OnChanged(function() SilentEngine.TargetColor=Options.SilentTargetColor.Value end)
     Options.SilentAimBind:OnChanged(function() SilentEngine.Settings.ToggleKey=Options.SilentAimBind.Value end)
+    Options.SilentRole:OnChanged(function() SilentEngine.Target=nil;SilentEngine.Settings.TargetRole=val("SilentRole","Auto") end)
     SilentEngine:CreateVisuals()
     connect(RunService.RenderStepped,function()
         if not ready then return end
@@ -1259,7 +1565,7 @@ local success, failure = xpcall(function()
     targetMarker.FillColor, targetMarker.OutlineColor = Color3.fromRGB(255,90,100), Color3.fromRGB(255,170,70)
     targetMarker.FillTransparency, targetMarker.DepthMode = 0.8, Enum.HighlightDepthMode.AlwaysOnTop
     local frame = Instance.new("Frame")
-    frame.Name, frame.Size, frame.Position = "DraggableHUD", UDim2.fromOffset(330,112), UDim2.fromOffset(24,110)
+    frame.Name, frame.Size, frame.Position = "DraggableHUD", UDim2.fromOffset(370,136), UDim2.fromOffset(24,110)
     frame.BackgroundColor3, frame.BackgroundTransparency = Color3.fromRGB(17,15,25), 0.12
     frame.BorderSizePixel, frame.Active, frame.Visible = 0, true, false
     frame.Parent = hud
@@ -1396,8 +1702,9 @@ local success, failure = xpcall(function()
     connect(RunService.PreSimulation,updateAntiFling)
     Toggles.AntiFling:OnChanged(function() if ready and not on("AntiFling") then clearAntiFling() end end)
     Toggles.AimAssist:OnChanged(function() resetCombat();targetMarker.Enabled=false;aimCircle.Visible=false end)
-    Toggles.GunESP:OnChanged(function() if ready then scanGuns() end end)
-    connect(workspace.DescendantAdded,function(object) if ready and on("GunESP") then rememberGun(object) end end)
+    Options.AimRole:OnChanged(resetCombat)
+    Toggles.GunESP:OnChanged(function() if ready then updateGuns() end end)
+    connect(workspace.DescendantAdded,function(object) if ready then rememberGun(object) end end)
     Toggles.AntiShake:OnChanged(function() smoothCamera=nil end)
     for id, poolName in pairs({Speed="Speed", CustomFOV="FOV"}) do
         local name = poolName
@@ -1422,19 +1729,21 @@ local success, failure = xpcall(function()
         task.defer(function() if ready and not closed then refreshPlayers() end end)
     end)
     connect(player.CharacterRemoving,function()
-        resetCombat();finishGrab();clearAntiFling();stopFly();restore(pools.Noclip)
+        resetCombat();Movement:Reset();finishGrab();clearAntiFling();stopFly();restore(pools.Noclip)
         if ready then Toggles.Fly:SetValue(false) end
     end)
     connect(player.CharacterAdded, function()
         if not ready then return end
         Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
         Toggles.Fly:SetValue(false);stopFly();restore(pools.Noclip)
+        Movement:Reset();Toggles.SelfRagdoll:SetValue(false)
         restore(pools.Speed); resetCombat(); smoothCamera=nil
     end)
-    connect(UIS.JumpRequest,jumpNow)
+    local function requestedJump() if not Movement:Wallhop() then jumpNow() end end
+    connect(UIS.JumpRequest,requestedJump)
     connect(UIS.InputBegan,function(input,processed)
         if input.KeyCode==Enum.KeyCode.ButtonL2 and not processed and not menuBusy() then aimTrigger=true end
-        if input.KeyCode==Enum.KeyCode.Space and not processed then jumpNow() end
+        if input.KeyCode==Enum.KeyCode.Space and not processed then requestedJump() end
     end)
     local function updateAim(dt,camera)
         local ownCharacter=character(player)
@@ -1456,16 +1765,42 @@ local success, failure = xpcall(function()
             camera.CFrame=camera.CFrame:Lerp(desired,alpha)
         end
     end
+    local warningTarget,warningAt=nil,-math.huge
+    local function updateAlerts(root)
+        local nearestDistance,nearest
+        for object,entry in pairs(gunObjects) do
+            if not object:IsDescendantOf(workspace) or gunInInventory(object) then continue end
+            local part=object:IsA("BasePart") and object or object:FindFirstChildWhichIsA("BasePart",true)
+            if not part or not root then continue end
+            local distance=(part.Position-root.Position).Magnitude
+            if not nearestDistance or distance<nearestDistance then nearestDistance,nearest=distance,object end
+            if on("GunNotification") and inRound(player) and not entry.Notified then
+                entry.Notified=true;notify(string.format("Dropped gun | %.0f studs",distance))
+            end
+        end
+        pickupStatus:SetText(nearest and string.format("Gun: %.0f studs",nearestDistance) or "Gun: not found")
+        if not on("MurderWarning") or not root or not inRound(player) then warningTarget=nil;return end
+        local selected,best
+        for _,p in ipairs(Players:GetPlayers()) do
+            local _,_,otherRoot=character(p)
+            if p~=player and otherRoot and roleHint(p)=="Knife" then
+                local distance=(otherRoot.Position-root.Position).Magnitude
+                if not best or distance<best then selected,best=p,distance end
+            end
+        end
+        local limit=val("MurderWarningRange",40)
+        if not selected or best>limit+5 then warningTarget=nil;return end
+        if best<=limit and selected~=warningTarget and os.clock()-warningAt>=8 then
+            warningAt=os.clock();warningTarget=selected
+            notify(string.format("Murderer nearby: %s | %.0f studs",selected.DisplayName,best))
+        end
+    end
     local accumulator = 0
     connect(RunService.Heartbeat, function(dt)
         if not ready then return end
         local _, h, r = character(player)
         updateAntiFling()
-        -- Old character references must not survive respawn or removal.
-        for object in pairs(pools.Speed) do if object ~= h then restore(pools.Speed); break end end
-        if h and on("Speed") and not on("Freecam") and not on("Fly") then
-            override(pools.Speed,h,"WalkSpeed",val("WalkSpeed",20))
-        elseif next(pools.Speed) then restore(pools.Speed) end
+        Movement:Update()
         if on("Fullbright") then
             override(pools.Light,Lighting,"Brightness",2)
             override(pools.Light,Lighting,"Ambient",Color3.fromRGB(180,180,180))
@@ -1479,10 +1814,12 @@ local success, failure = xpcall(function()
         accumulator += dt
         if accumulator < 0.15 then return end
         accumulator = 0
-        pollRoles();updateMarkers();updateGuns()
+        pollRoles();updateMarkers();updateGuns();updateAlerts(r)
+        SilentEngine:RefreshTarget()
         silentCounter:SetText(string.format("Matching calls: %d | redirected: %d",SilentEngine.Seen,SilentEngine.Redirected))
         silentError:SetText("Last error: "..(SilentEngine.LastError~="" and SilentEngine.LastError or "none"))
-        silentStatus:SetText(not on("SilentAim") and "Silent Aim: off" or (menuBusy() or cameraState) and "Silent Aim: paused" or "Enabled: "..SilentEngine.Settings.SilentAimMethod)
+        silentStatus:SetText(not on("SilentAim") and "Silent Aim: off" or (menuBusy() or cameraState) and "Silent Aim: paused" or ("Enabled: "..SilentEngine.Settings.SilentAimMethod))
+        silentTargetStatus:SetText("Target: "..(SilentEngine.Target and SilentEngine.Target.DisplayName or "none"))
         local map,roundState=roundInfo()
         mapLabel:SetText("Map: "..map);roundLabel:SetText("Round: "..roundState)
         local _,myHint=roleHint(player);myRoleLabel:SetText("Role: "..myHint)
@@ -1491,8 +1828,9 @@ local success, failure = xpcall(function()
         if on("HUD") then
             local speed = r and Vector3.new(r.AssemblyLinearVelocity.X,0,r.AssemblyLinearVelocity.Z).Magnitude or 0
             local pos = r and r.Position or Vector3.zero
-            local name=combatTarget and combatTarget.DisplayName or "none"
-            text.Text = string.format("CLAUDEHUB  |  MM2 v%s\nSpeed: %.1f studs/s  |  HP: %.0f\nXYZ: %.0f  %.0f  %.0f\nTarget: %s",VERSION,speed,h and h.Health or 0,pos.X,pos.Y,pos.Z,name)
+            local activeTarget=on("SilentAim") and SilentEngine.Target or combatTarget
+            local name=activeTarget and activeTarget.DisplayName or "none"
+            text.Text = string.format("CLAUDEHUB  |  MM2 v%s\nSpeed: %.1f studs/s  |  HP: %.0f\nXYZ: %.0f  %.0f  %.0f\nRole: %s\nTarget: %s",VERSION,speed,h and h.Health or 0,pos.X,pos.Y,pos.Z,myHint,name)
             clampHUD(frame.Position.X.Offset,frame.Position.Y.Offset)
         end
     end)
@@ -1565,11 +1903,12 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","AntiFling","AimHardLock","RoundDetection","SilentConfigName","SilentConfigChoice"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","AntiFling","AimHardLock","RoundDetection","SilentConfigName","SilentConfigChoice","CustomGravity","JumpPower","Sprint","NoAcceleration","FakeWallhop","ClickTP","AntiVoid","AutoFollow","SelfRagdoll","PadEnabled","FollowPlayer","WaypointList","WaypointName"})
         manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
-    for _,id in ipairs({"Fly","Noclip","SilentAim","AntiFling"}) do Toggles[id]:SetValue(false) end
+    for _,id in ipairs({"Fly","Noclip","SilentAim","AntiFling","CustomGravity","JumpPower","Sprint","NoAcceleration","FakeWallhop","ClickTP","AntiVoid","AutoFollow","SelfRagdoll","PadEnabled"}) do Toggles[id]:SetValue(false) end
+    scanGuns()
     Options.RoundDetection:SetValue("Auto")
     -- Match the supplied MM2 preset at startup, including after an older config.
     Toggles.SilentTeamCheck:SetValue(false)
@@ -1580,6 +1919,7 @@ local success, failure = xpcall(function()
     Options.SilentRadius:SetValue(130)
     Options.AimSmoothing:SetValue(55)
     SilentEngine.Settings.Enabled=false
+    Options.SilentRole:SetValue("Auto")
     notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
 end, function(err) return tostring(err) end)
 if not success then
