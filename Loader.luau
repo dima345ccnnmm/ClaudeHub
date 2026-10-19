@@ -1,4 +1,4 @@
--- ClaudeHub loader v1.2.0 | JJS + DOORS/lobby + universal fallback.
+-- ClaudeHub loader v1.3.0 | MM2 + JJS + DOORS/lobby + universal fallback.
 -- Run again after teleporting. This loader never queues itself automatically.
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubLoader_v1"
@@ -19,7 +19,9 @@ local module = "unknown"
 local ok, result = xpcall(function()
     assert(type(loadstring) == "function", "This environment does not support loadstring")
     if not game:IsLoaded() then game.Loaded:Wait() end
-    if game.GameId == 3508322461 then
+    if game.GameId == 66654135 then
+        module = "MM2.luau"
+    elseif game.GameId == 3508322461 then
         module = "JJS.luau"
     elseif game.GameId == 2440500124 then
         module = game.PlaceId == 6516141723 and "DoorsLobby.luau" or "Doors.luau"

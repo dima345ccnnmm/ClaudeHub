@@ -1,0 +1,845 @@
+-- ClaudeHub MM2 v0.1.0 | Ordinary Obsidian (deividcomsono, MIT).
+-- Client-side features; no hidden-role remote calls, silent aim or damage hooks.
+local VERSION = "0.1.0"
+local env = getgenv and getgenv() or _G
+local KEY = "__ClaudeHubMM2"
+if env[KEY] and not env[KEY].Unloaded then
+    env[KEY]:Notify("ClaudeHub MM2 is already open. RightControl toggles the menu.", 4)
+    return env[KEY]
+end
+assert(game.GameId == 66654135, "ClaudeHub MM2: open Murder Mystery 2 first")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local CAS = game:GetService("ContextActionService")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local player = Players.LocalPlayer
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local function download(path)
+    local source = game:HttpGet(repo .. path)
+    assert(type(source) == "string" and #source > 0, "Empty Obsidian download: " .. path)
+    local chunk, err = loadstring(source, "@Obsidian/" .. path)
+    assert(chunk, tostring(err))
+    return chunk()
+end
+local Library = download("Library.lua")
+env[KEY] = Library
+env.Library = Library
+local Options, Toggles = Library.Options, Library.Toggles
+local ready, closed, focused = false, false, true
+local started = os.clock()
+local connections, pools, markers = {}, {}, {}
+local hud, markerFolder
+local cameraState, mouseState
+local freePosition, freePitch, freeYaw
+local freeMoving = false
+local lastJump = 0
+local combatTarget, smoothCamera, controlsState
+local serverRows, serverMap, serverCursor = {}, {}, nil
+local serversBusy, teleportBusy, serverGeneration = false, false, 0
+local serverStatus, targetStatus
+local aimGui
+local requestHTTP = (type(request)=="function" and request) or (type(http_request)=="function" and http_request)
+    or (type(syn)=="table" and syn.request) or (type(http)=="table" and http.request)
+local playerNames = {}
+local freeAction = "ClaudeHubMM2_Freecam"
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(connections, c)
+    return c
+end
+local function character(p)
+    local c = p.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    local r = c and c:FindFirstChild("HumanoidRootPart")
+    if h and r and h.Health > 0 then return c, h, r end
+    return nil, nil, nil
+end
+local function notify(text) if not closed then Library:Notify(text, 4) end end
+local function on(id) return Toggles[id] and Toggles[id].Value == true end
+local function val(id, default)
+    local o = Options[id]
+    if o and o.Value ~= nil then return o.Value end
+    return default
+end
+local function restore(pool)
+    for object, fields in pairs(pool) do
+        for name, data in pairs(fields) do
+            pcall(function() if object[name] == data.Applied then object[name] = data.Base end end)
+        end
+    end
+    table.clear(pool)
+end
+local function override(pool, object, name, value)
+    local fields = pool[object]
+    if not fields then fields = {}; pool[object] = fields end
+    local data = fields[name]
+    if not data then data = {Base = object[name]}; fields[name] = data
+    elseif object[name] ~= data.Applied then data.Base = object[name] end
+    data.Applied = value
+    if object[name] ~= value then object[name] = value end
+end
+for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light"}) do pools[name] = {} end
+local function clearMarker(p)
+    local m = markers[p]
+    if m then m.Highlight:Destroy(); m.Gui:Destroy(); markers[p] = nil end
+end
+local function clearMarkers()
+    for p in pairs(markers) do clearMarker(p) end
+end
+local function releaseMouse()
+    if mouseState then
+        if UIS.MouseBehavior == Enum.MouseBehavior.LockCurrentPosition then UIS.MouseBehavior = mouseState.Behavior end
+        if UIS.MouseIconEnabled == false then UIS.MouseIconEnabled = mouseState.Icon end
+        mouseState = nil
+    end
+end
+local function releaseCamera()
+    CAS:UnbindAction(freeAction)
+    freeMoving = false
+    if controlsState then
+        pcall(function() if controlsState.WasEnabled then controlsState.Controls:Enable() end end)
+        controlsState = nil
+    end
+    restore(pools.Jump)
+    releaseMouse()
+    if cameraState then
+        local s = cameraState
+        pcall(function()
+            if s.Camera.CameraType == s.OwnedType then
+                s.Camera.CameraType = s.Type
+                if s.Mode == "Free" then s.Camera.CFrame, s.Camera.Focus = s.CFrame, s.Focus end
+                local _, h = character(player)
+                s.Camera.CameraSubject = s.Subject and s.Subject.Parent and s.Subject or h
+            end
+        end)
+        cameraState = nil
+    end
+end
+local function menuBusy()
+    return not focused or UIS:GetFocusedTextBox() ~= nil or Library.Toggled == true
+end
+local function startCamera(mode)
+    releaseCamera()
+    local camera = workspace.CurrentCamera
+    if not camera then return false end
+    local subject
+    if mode == "Spectate" then
+        local target = playerNames[val("SpectatePlayer", "")]
+        if target then local _, targetHumanoid = character(target); subject = targetHumanoid end
+        if not subject then return false end
+    end
+    cameraState = {Camera=camera, Mode=mode, Type=camera.CameraType, Subject=camera.CameraSubject,
+        CFrame=camera.CFrame, Focus=camera.Focus, OwnedType=mode == "Free" and Enum.CameraType.Scriptable or Enum.CameraType.Custom}
+    camera.CameraType = cameraState.OwnedType
+    if mode == "Spectate" then camera.CameraSubject = subject
+    else
+        freePosition = camera.CFrame.Position
+        freePitch, freeYaw = camera.CFrame:ToOrientation()
+        pcall(function()
+            local scripts = player:FindFirstChild("PlayerScripts")
+            local module = scripts and scripts:FindFirstChild("PlayerModule")
+            if module then
+                local controls = require(module):GetControls()
+                if controls.controlsEnabled == true then
+                    controlsState = {Controls=controls, WasEnabled=true}
+                    controls:Disable()
+                end
+            end
+        end)
+        CAS:BindActionAtPriority(freeAction, function()
+            return Enum.ContextActionResult.Sink
+        end, false, 10000, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
+            Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Space, Enum.KeyCode.LeftControl, Enum.KeyCode.LeftShift)
+    end
+    smoothCamera = nil
+    return true
+end
+-- Client-observed tool hints, not hidden server roles.
+local roleColors={Knife=Color3.fromRGB(255,90,100),Gun=Color3.fromRGB(80,165,255),Unknown=Color3.fromRGB(190,190,205),Conflict=Color3.fromRGB(245,190,60)}
+local function toolsIn(container)
+    local knife,gun=false,false
+    if container then for _,tool in ipairs(container:GetChildren()) do
+        if tool:IsA("Tool") then
+            local name=tool.Name:lower()
+            if name=="knife" then knife=true elseif name=="gun" then gun=true end
+        end
+    end end
+    return knife,gun
+end
+local function roleHint(p)
+    local knife,gun=toolsIn(p.Character)
+    local k,g=toolsIn(p:FindFirstChildOfClass("Backpack"));knife,gun=knife or k,gun or g
+    if knife and gun then return "Conflict","Tools conflict",roleColors.Conflict end
+    if knife then return "Knife","Knife seen",roleColors.Knife end
+    if gun then return "Gun","Gun seen",roleColors.Gun end
+    return "Unknown","Unknown",roleColors.Unknown
+end
+local function observedAttribute(keys)
+    for _,object in ipairs({workspace,ReplicatedStorage}) do for _,name in ipairs(keys) do
+        local value=object:GetAttribute(name)
+        if type(value)=="string" and #value>0 and #value<=80 then return value.." (attribute)" end
+    end end
+end
+local function roundInfo()
+    local map=observedAttribute({"MapName","CurrentMap"}) or "not exposed"
+    local status=observedAttribute({"RoundState","RoundStatus"}) or "not exposed"
+    return map,status
+end
+local gunObjects={}
+local function clearGunEntry(object)
+    local entry=gunObjects[object]
+    if entry then
+        if entry.Highlight then entry.Highlight:Destroy() end
+        if entry.Gui then entry.Gui:Destroy() end
+        gunObjects[object]=nil
+    end
+end
+local function clearGuns() for object in pairs(gunObjects) do clearGunEntry(object) end end
+local function gunInInventory(object)
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p.Character and object:IsDescendantOf(p.Character) then return true end
+        local backpack=p:FindFirstChildOfClass("Backpack")
+        if backpack and object:IsDescendantOf(backpack) then return true end
+    end
+    return false
+end
+local function rememberGun(object)
+    if object.Name:lower()=="gundrop" and (object:IsA("Model") or object:IsA("BasePart")) and not gunInInventory(object) then
+        gunObjects[object]=gunObjects[object] or {}
+    end
+end
+local function scanGuns()
+    clearGuns()
+    if on("GunESP") then for _,object in ipairs(workspace:GetDescendants()) do rememberGun(object) end end
+end
+local function updateGuns()
+    if not on("GunESP") then if next(gunObjects) then clearGuns() end;return end
+    local camera=workspace.CurrentCamera
+    for object,entry in pairs(gunObjects) do
+        if not object:IsDescendantOf(workspace) or gunInInventory(object) then clearGunEntry(object);continue end
+        local part=object:IsA("BasePart") and object or object:FindFirstChild("Handle",true)
+        if not part or not part:IsA("BasePart") then part=object:FindFirstChildWhichIsA("BasePart",true) end
+        local distance=part and camera and (part.Position-camera.CFrame.Position).Magnitude
+        if not part or not part:IsA("BasePart") or not distance or distance>val("ESPRange",500) then
+            if entry.Highlight then entry.Highlight.Enabled=false;entry.Gui.Enabled=false end
+            continue
+        end
+        if not entry.Highlight then
+            entry.Highlight=Instance.new("Highlight",markerFolder)
+            entry.Highlight.Name="DroppedGunMarker";entry.Highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+            entry.Highlight.FillTransparency=0.6;entry.Highlight.FillColor=Color3.fromRGB(255,205,65)
+            entry.Highlight.OutlineColor=Color3.fromRGB(255,235,150)
+            entry.Gui=Instance.new("BillboardGui",hud);entry.Gui.Name="DroppedGunLabel"
+            entry.Gui.AlwaysOnTop=true;entry.Gui.Size=UDim2.fromOffset(220,30);entry.Gui.StudsOffsetWorldSpace=Vector3.new(0,1.2,0)
+            entry.Label=Instance.new("TextLabel",entry.Gui);entry.Label.Size=UDim2.fromScale(1,1)
+            entry.Label.BackgroundTransparency=1;entry.Label.Font=Enum.Font.Code;entry.Label.TextSize=14
+            entry.Label.TextColor3=Color3.fromRGB(255,225,115);entry.Label.TextStrokeTransparency=0.3
+        end
+        entry.Highlight.Adornee=part;entry.Highlight.Enabled=true
+        entry.Gui.Adornee=part;entry.Gui.MaxDistance=val("ESPRange",500);entry.Gui.Enabled=true
+        entry.Label.Text=string.format("Dropped gun | %.0f studs",distance)
+    end
+end
+local aimTrigger=false
+local function resetCombat() combatTarget=nil end
+local function assistHeld()
+    local mode=val("AimActivation","RMB or L2")
+    return (mode~="L2 only" and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
+        or (mode~="RMB only" and aimTrigger)
+end
+local function equippedWeapon()
+    local k,g=toolsIn(player.Character);return k or g
+end
+local function aimCandidate(p,camera,radiusMultiplier)
+    if p==player then return end
+    local _,_,myRoot=character(player)
+    local c,h,root=character(p)
+    if not c or not myRoot then return end
+    if (root.Position-myRoot.Position).Magnitude>val("AimRange",180) then return end
+    local filter=val("AimRole","Any visible player")
+    local hint=roleHint(p)
+    if filter=="Knife seen" and hint~="Knife" then return end
+    if filter=="Gun seen" and hint~="Gun" then return end
+    local choice=val("AimPoint","UpperTorso")
+    local part
+    if choice=="Head" then part=c:FindFirstChild("Head") or root
+    elseif choice=="HumanoidRootPart" then part=root
+    else part=c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or root end
+    if not part:IsA("BasePart") then return end
+    local point=part.Position+root.AssemblyLinearVelocity*val("AimPrediction",0)
+    local screen,visible=camera:WorldToViewportPoint(point)
+    if not visible or screen.Z<=0 then return end
+    local center=camera.ViewportSize/2
+    local delta=Vector2.new(screen.X-center.X,screen.Y-center.Y)
+    local pixels=delta.Magnitude
+    if pixels>val("AimRadius",110)*(radiusMultiplier or 1) then return end
+    local offset=point-camera.CFrame.Position
+    if offset.Magnitude<0.05 then return end
+    local ray=RaycastParams.new();ray.FilterType=Enum.RaycastFilterType.Exclude
+    ray.FilterDescendantsInstances={player.Character,markerFolder};ray.IgnoreWater=true
+    local hit=workspace:Raycast(camera.CFrame.Position,offset,ray)
+    if hit and not hit.Instance:IsDescendantOf(c) then return end
+    return point,pixels,c
+end
+local function chooseAimTarget(camera)
+    if combatTarget then
+        local point,_,model=aimCandidate(combatTarget,camera,1.1)
+        if point then return combatTarget,point,model end
+    end
+    local selected,point,model,best
+    for _,p in ipairs(Players:GetPlayers()) do
+        local at,pixels,c=aimCandidate(p,camera,1)
+        if at and (not best or pixels<best) then selected,point,model,best=p,at,c,pixels end
+    end
+    return selected,point,model
+end
+
+local function jumpNow()
+    if not ready or not on("InfiniteJump") or on("Freecam") or not focused or UIS:GetFocusedTextBox() or os.clock()-lastJump < 0.12 then return end
+    local _,h,r = character(player)
+    if not h or r.Anchored or h.Sit then return end
+    lastJump = os.clock()
+    h:ChangeState(Enum.HumanoidStateType.Jumping)
+    local velocity = r.AssemblyLinearVelocity
+    r.AssemblyLinearVelocity = Vector3.new(velocity.X, val("JumpVelocity",50), velocity.Z)
+end
+local function cleanup()
+    if closed then return end
+    closed, ready = true, false
+    for _, c in ipairs(connections) do c:Disconnect() end
+    table.clear(connections)
+    RunService:UnbindFromRenderStep("ClaudeHubMM2_Camera")
+    releaseCamera()
+    resetCombat()
+    serverGeneration += 1
+    for _, pool in pairs(pools) do restore(pool) end
+    clearMarkers()
+    clearGuns()
+    if aimGui then aimGui:Destroy() end
+    if hud then hud:Destroy() end
+    if markerFolder then markerFolder:Destroy() end
+    if env[KEY] == Library then env[KEY] = nil end
+    if env.Library == Library then env.Library = nil end
+end
+Library:OnUnload(cleanup)
+local success, failure = xpcall(function()
+    Library.ForceCheckbox = false
+    Library.ShowToggleFrameInKeybinds = false
+    local Window = Library:CreateWindow({Title="ClaudeHub | MM2", Footer="MM2 v" .. VERSION .. " | Obsidian",
+        Center=true, AutoShow=true, Resizable=true, NotifySide="Right", ShowCustomCursor=true})
+    local Tabs = {
+        Home=Window:AddTab("Home", "house"),
+        Character=Window:AddTab("Character", "user"),
+        Visuals=Window:AddTab("Visuals", "eye"),
+        Camera=Window:AddTab("Camera", "camera"),
+        Combat=Window:AddTab("Aim Assist", "crosshair"),
+        Servers=Window:AddTab("Servers", "server"),
+        Settings=Window:AddTab("Settings", "settings"),
+    }
+    local function toggle(box, id, text, key)
+        local t = box:AddToggle(id, {Text=text, Default=false})
+        if key then
+            t:AddKeyPicker(id .. "Bind", {Default=key, Text=text, Mode="Toggle", SyncToggleState=false, NoUI=true})
+            local picker = Options[id .. "Bind"]
+            picker.SyncToggleState, picker.Toggled = true, t.Value
+            picker:Update()
+        end
+        return t
+    end
+    local function slider(box, id, text, default, low, high, rounding)
+        box:AddSlider(id, {Text=text, Default=default, Min=low, Max=high, Rounding=rounding or 0})
+    end
+    local function action(box, text, fn, key, id)
+        local button = box:AddButton({Text=text, Func=function()
+            if ready and focused and UIS:GetFocusedTextBox() == nil then fn() end
+        end})
+        if key then
+            button:AddKeyPicker(id, {Default=key, Mode="Press", NoUI=true, Text=text})
+        end
+    end
+    local home = Tabs.Home:AddLeftGroupbox("Profile", "user")
+    home:AddLabel(player.DisplayName .. "  @" .. player.Name)
+    home:AddLabel("User ID: " .. tostring(player.UserId))
+    home:AddLabel("Murder Mystery 2")
+    home:AddLabel("ClaudeHub v" .. VERSION)
+    local mapLabel=home:AddLabel("Map: not exposed")
+    local roundLabel=home:AddLabel("Round: not exposed")
+    local myRoleLabel=home:AddLabel("Tools: Unknown")
+    local serverLabel = home:AddLabel("Players: --")
+    local info = Tabs.Home:AddRightGroupbox("Release", "info")
+    info:AddLabel("Ordinary Obsidian")
+    info:AddLabel("Character / Visuals / Camera / Combat / Servers")
+    info:AddLabel("Gameplay features start disabled")
+    info:AddLabel("No anticheat bypass")
+    info:AddLabel("UI: deividcomsono (MIT)")
+    info:AddLabel("Soft camera aim / observed tool hints")
+    local char = Tabs.Character:AddLeftGroupbox("Movement", "footprints")
+    toggle(char, "Speed", "WalkSpeed", "V")
+    slider(char, "WalkSpeed", "Speed", 20, 0, 120)
+    toggle(char, "InfiniteJump", "Infinite Jump", "J")
+    slider(char, "JumpVelocity", "Jump Strength", 50, 20, 100)
+    local hudBox = Tabs.Character:AddRightGroupbox("HUD", "monitor")
+    toggle(hudBox, "HUD", "MM2 HUD", "F9")
+    local visuals = Tabs.Visuals:AddLeftGroupbox("Players", "users")
+    toggle(visuals, "ESP", "Player ESP", "H")
+    toggle(visuals, "ESPNames", "Names")
+    toggle(visuals, "ESPHealth", "Health")
+    toggle(visuals, "ESPDistance", "Distance")
+    toggle(visuals,"ESPRoles","Tool / role hints")
+    toggle(visuals,"ESPRoleColors","Colors by tool hint")
+    toggle(visuals,"GunESP","Dropped Gun ESP","G")
+    for _,id in ipairs({"ESPNames","ESPDistance","ESPRoles","ESPRoleColors"}) do Toggles[id]:SetValue(true) end
+    visuals:AddLabel("Marker Color"):AddColorPicker("ESPColor", {Default=Color3.fromRGB(150,110,255), Title="Player ESP"})
+    local visualSettings = Tabs.Visuals:AddRightGroupbox("Rendering", "palette")
+    slider(visualSettings, "ESPRange", "Render Distance", 500, 50, 2000)
+    slider(visualSettings, "ESPFill", "Fill Transparency", 0.8, 0, 1, 2)
+    slider(visualSettings, "ESPText", "Text Size", 14, 10, 24)
+    toggle(visualSettings, "Fullbright", "Fullbright")
+    toggle(visualSettings, "NoFog", "Remove Fog")
+    local cam = Tabs.Camera:AddLeftGroupbox("Camera", "camera")
+    toggle(cam, "CustomFOV", "Custom FOV")
+    slider(cam, "FOV", "Field of View", 80, 40, 120)
+    toggle(cam, "AntiShake", "Anti Camera Shake")
+    slider(cam, "Stabilize", "Stabilization", 70, 10, 95)
+    toggle(cam, "Freecam", "Freecam", "F6")
+    slider(cam, "FreecamSpeed", "Freecam Speed", 32, 5, 150)
+    local watch = Tabs.Camera:AddRightGroupbox("Spectate", "users")
+    watch:AddDropdown("SpectatePlayer", {Text="Player", Values={}, AllowNull=true})
+    toggle(watch, "Spectate", "Spectate Player", "F7")
+    local function refreshPlayers()
+        local names = {}
+        table.clear(playerNames)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player then
+                local name = p.DisplayName .. " (@" .. p.Name .. ")"
+                table.insert(names, name); playerNames[name] = p
+            end
+        end
+        table.sort(names)
+        local selected = Options.SpectatePlayer.Value
+        Options.SpectatePlayer:SetValues(names)
+        if selected and not playerNames[selected] then
+            Options.SpectatePlayer:SetValue(nil)
+            if on("Spectate") then Toggles.Spectate:SetValue(false) end
+        end
+    end
+    action(watch, "Refresh Players", refreshPlayers)
+    local targetBox = Tabs.Combat:AddLeftGroupbox("Aim Assist", "crosshair")
+    toggle(targetBox,"AimAssist","Soft Aim Assist","X")
+    targetBox:AddDropdown("AimActivation",{Text="Hold to assist",Values={"RMB or L2","RMB only","L2 only"},Default=1})
+    targetBox:AddDropdown("AimPoint",{Text="Aim point",Values={"UpperTorso","Head","HumanoidRootPart"},Default=1})
+    targetBox:AddDropdown("AimRole",{Text="Target filter",Values={"Any visible player","Knife seen","Gun seen"},Default=1})
+    slider(targetBox,"AimRadius","Assist radius (pixels)",110,25,300)
+    slider(targetBox,"AimSmoothing","Camera smoothing",8,1,25)
+    slider(targetBox,"AimRange","Max distance (studs)",180,20,500)
+    slider(targetBox,"AimPrediction","Movement prediction",0,0,0.2,2)
+    toggle(targetBox,"AimRequireWeapon","Require equipped weapon")
+    toggle(targetBox,"AimCircle","Show assist circle")
+    toggle(targetBox,"TargetHighlight","Highlight aim target")
+    Toggles.AimCircle:SetValue(true)
+    targetStatus=targetBox:AddLabel("Assist: off")
+    local aimInfo=Tabs.Combat:AddRightGroupbox("How it works","info")
+    aimInfo:AddLabel("Hold RMB or L2; release to stop assistance.")
+    aimInfo:AddLabel("Visibility check is always enabled.")
+    aimInfo:AddLabel("Camera smoothing only; no bullet/damage changes.")
+    aimInfo:AddLabel("Device type is not spoofed.")
+    aimInfo:AddLabel("Knife/Gun hints depend on client-visible Tools.")
+    local evidence=Tabs.Home:AddRightGroupbox("Client information","info")
+    evidence:AddLabel("No weapon seen means Unknown, not Innocent.")
+    evidence:AddLabel("Gun carrier may be Sheriff or Hero.")
+    evidence:AddLabel("Map/round: attributes only when present.")
+    local servers = Tabs.Servers:AddLeftGroupbox("Public Servers", "server")
+    servers:AddDropdown("ServerSort", {Text="Sort", Values={"Players (low)","Ping (low)"}, Default=1})
+    servers:AddDropdown("ServerChoice", {Text="Server", Values={}, AllowNull=true})
+    serverStatus = servers:AddLabel("Servers: not loaded")
+    local serverActions = Tabs.Servers:AddRightGroupbox("Connection", "network")
+    serverActions:AddLabel("Job: " .. (game.JobId ~= "" and game.JobId or "unavailable"))
+    serverActions:AddInput("JobID", {Text="Job ID", Default="", Finished=true})
+    local function teleport(job)
+        if teleportBusy then notify("Teleport already in progress"); return end
+        if type(job) ~= "string" or #job < 1 or #job > 100 or not job:match("^[%w%-]+$") then notify("Invalid Job ID"); return end
+        teleportBusy = true
+        local ok,err = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId,job,player) end)
+        if not ok then teleportBusy=false;notify("Teleport failed: " .. tostring(err));return end
+        notify("Teleport requested")
+        task.delay(15,function() if not closed then teleportBusy=false end end)
+    end
+    local function displayServers()
+        local sorting = val("ServerSort","Players (low)")
+        table.sort(serverRows,function(a,b)
+            local aa = sorting == "Ping (low)" and (tonumber(a.ping) or math.huge) or a.playing
+            local bb = sorting == "Ping (low)" and (tonumber(b.ping) or math.huge) or b.playing
+            return aa == bb and a.id < b.id or aa < bb
+        end)
+        local labels = {}
+        table.clear(serverMap)
+        for _,row in ipairs(serverRows) do
+            local label = string.format("%d/%d | %s ms | %s",row.playing,row.maxPlayers,tostring(row.ping or "?"),row.id)
+            table.insert(labels,label);serverMap[label]=row.id
+        end
+        Options.ServerChoice:SetValues(labels)
+        serverStatus:SetText(string.format("Servers: %d%s",#labels,serverCursor and " | more available" or ""))
+    end
+    local function fetchServers(reset)
+        if serversBusy then notify("Server list is already loading"); return end
+        if not reset and not serverCursor then notify("No next page"); return end
+        serversBusy=true
+        serverGeneration+=1
+        local generation=serverGeneration
+        local cursor = not reset and serverCursor or nil
+        serverStatus:SetText("Loading public servers...")
+        task.spawn(function()
+            local ok,result=pcall(function()
+                local url="https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
+                if cursor then url ..= "&cursor=" .. HttpService:UrlEncode(cursor) end
+                local body
+                if requestHTTP then
+                    local response=requestHTTP({Url=url,Method="GET"})
+                    assert(response and (response.StatusCode==200 or response.Success==true), "HTTP " .. tostring(response and response.StatusCode))
+                    body=response.Body
+                else body=game:HttpGet(url) end
+                assert(type(body)=="string" and #body < 2000000,"Invalid server response")
+                local data=HttpService:JSONDecode(body)
+                assert(type(data)=="table" and type(data.data)=="table","Invalid server data")
+                return data
+            end)
+            if closed or generation~=serverGeneration then return end
+            serversBusy=false
+            if not ok then serverStatus:SetText("Server list unavailable");notify("Server list: " .. tostring(result));return end
+            if reset then table.clear(serverRows);Options.ServerChoice:SetValue(nil) end
+            local known={}
+            for _,row in ipairs(serverRows) do known[row.id]=true end
+            for _,row in ipairs(result.data) do
+                if type(row)=="table" and type(row.id)=="string" and type(row.playing)=="number" and type(row.maxPlayers)=="number"
+                    and row.id~=game.JobId and row.playing<row.maxPlayers and not known[row.id] and #serverRows<500 then
+                    table.insert(serverRows,row);known[row.id]=true
+                end
+            end
+            serverCursor=type(result.nextPageCursor)=="string" and result.nextPageCursor or nil
+            if #serverRows>=500 then serverCursor=nil end
+            displayServers()
+        end)
+    end
+    action(servers,"Refresh Servers",function() fetchServers(true) end)
+    action(servers,"Load Next Page",function() fetchServers(false) end)
+    action(servers,"Join Selected Server",function()
+        local job=serverMap[val("ServerChoice","")]
+        if not job then notify("Select a server first");return end
+        teleport(job)
+    end)
+    action(servers,"Hop to First Listed",function()
+        if not serverRows[1] then notify("Load public servers first");return end
+        teleport(serverRows[1].id)
+    end)
+    action(serverActions,"Rejoin",function() teleport(game.JobId) end)
+    action(serverActions,"Join Job ID",function() teleport(tostring(val("JobID",""))) end)
+    action(serverActions,"Copy Job ID",function()
+        if type(setclipboard)~="function" then notify("Clipboard is not supported");return end
+        setclipboard(game.JobId);notify("Job ID copied")
+    end)
+    Options.ServerSort:OnChanged(displayServers)
+    connect(TeleportService.TeleportInitFailed,function(p,_,message)
+        if p==player then teleportBusy=false;notify("Teleport failed: " .. tostring(message)) end
+    end)
+    local menu = Tabs.Settings:AddLeftGroupbox("Interface", "settings")
+    menu:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {Default="RightControl", NoUI=true, Text="Menu"})
+    Library.ToggleKeybind = Options.MenuKeybind
+    action(menu, "Unload", function() Library:Unload() end)
+    hud = Instance.new("ScreenGui")
+    hud.Name, hud.ResetOnSpawn, hud.ZIndexBehavior = "ClaudeHubMM2_HUD", false, Enum.ZIndexBehavior.Sibling
+    hud.DisplayOrder = 20
+    hud.Parent = player:WaitForChild("PlayerGui")
+    aimGui=Instance.new("ScreenGui")
+    aimGui.Name="ClaudeHubMM2_AimOverlay";aimGui.ResetOnSpawn=false;aimGui.IgnoreGuiInset=true
+    aimGui.DisplayOrder=19;aimGui.Parent=player:WaitForChild("PlayerGui")
+    local aimCircle=Instance.new("Frame",aimGui)
+    aimCircle.Name="AssistRadius";aimCircle.AnchorPoint=Vector2.new(0.5,0.5)
+    aimCircle.Position=UDim2.fromScale(0.5,0.5);aimCircle.BackgroundTransparency=1
+    aimCircle.BorderSizePixel=0;aimCircle.Visible=false;aimCircle.Active=false
+    local round=Instance.new("UICorner",aimCircle);round.CornerRadius=UDim.new(1,0)
+    local aimStroke=Instance.new("UIStroke",aimCircle);aimStroke.Color=Color3.fromRGB(170,130,255)
+    aimStroke.Thickness=1.5;aimStroke.Transparency=0.3
+    local targetMarker = Instance.new("Highlight", hud)
+    targetMarker.Name, targetMarker.Enabled = "CombatTarget", false
+    targetMarker.FillColor, targetMarker.OutlineColor = Color3.fromRGB(255,90,100), Color3.fromRGB(255,170,70)
+    targetMarker.FillTransparency, targetMarker.DepthMode = 0.8, Enum.HighlightDepthMode.AlwaysOnTop
+    local frame = Instance.new("Frame")
+    frame.Name, frame.Size, frame.Position = "DraggableHUD", UDim2.fromOffset(330,112), UDim2.fromOffset(24,110)
+    frame.BackgroundColor3, frame.BackgroundTransparency = Color3.fromRGB(17,15,25), 0.12
+    frame.BorderSizePixel, frame.Active, frame.Visible = 0, true, false
+    frame.Parent = hud
+    local corner = Instance.new("UICorner", frame); corner.CornerRadius = UDim.new(0,8)
+    local stroke = Instance.new("UIStroke", frame); stroke.Color = Color3.fromRGB(140,95,235); stroke.Transparency = 0.3
+    local text = Instance.new("TextLabel", frame)
+    text.Size, text.Position = UDim2.new(1,-20,1,-12), UDim2.fromOffset(10,6)
+    text.BackgroundTransparency, text.TextColor3 = 1, Color3.fromRGB(225,220,240)
+    text.Font, text.TextSize = Enum.Font.Code, 14
+    text.TextXAlignment, text.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
+    text.Text, text.Active = "CLAUDEHUB  |  MM2", false
+    local dragInput, dragStart, dragOrigin
+    local function clampHUD(x, y)
+        local camera = workspace.CurrentCamera
+        local size = camera and camera.ViewportSize or Vector2.new(1280,720)
+        frame.Position = UDim2.fromOffset(math.clamp(x,0,math.max(0,size.X-frame.AbsoluteSize.X)),
+            math.clamp(y,0,math.max(0,size.Y-frame.AbsoluteSize.Y-36)))
+    end
+    action(hudBox, "Reset HUD Position", function() clampHUD(24,110) end)
+    connect(frame.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput, dragStart, dragOrigin = input, input.Position, frame.AbsolutePosition
+        end
+    end)
+    connect(UIS.InputChanged, function(input)
+        if input.KeyCode==Enum.KeyCode.ButtonL2 then
+            aimTrigger=focused and not menuBusy() and input.Position.Z>0.2
+        end
+        if dragInput and (input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local delta = input.Position - dragStart
+            clampHUD(dragOrigin.X + delta.X, dragOrigin.Y + delta.Y)
+        end
+        if ready and on("Freecam") and cameraState and mouseState and input.UserInputType == Enum.UserInputType.MouseMovement and not menuBusy() then
+            freeYaw -= input.Delta.X * 0.003
+            freePitch = math.clamp(freePitch - input.Delta.Y * 0.003, -1.5, 1.5)
+        end
+    end)
+    connect(UIS.InputEnded, function(input)
+        if input.KeyCode==Enum.KeyCode.ButtonL2 then aimTrigger=false end
+        if input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then dragInput = nil end
+    end)
+    connect(UIS.WindowFocusReleased, function() aimTrigger=false;focused = false; dragInput = nil; freeMoving = false; releaseMouse(); resetCombat() end)
+    connect(UIS.WindowFocused, function() focused = true end)
+    connect(UIS.GamepadDisconnected,function() aimTrigger=false;resetCombat() end)
+    markerFolder = Instance.new("Folder", workspace); markerFolder.Name = "ClaudeHubMM2_Markers"
+    local function updateMarkers()
+        if not on("ESP") then clearMarkers(); return end
+        local camera = workspace.CurrentCamera
+        if not camera then clearMarkers(); return end
+        local accepted, total = {}, 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            local c, h, r = character(p)
+            local distance = r and (r.Position - camera.CFrame.Position).Magnitude or math.huge
+            local teammate = false
+            if p ~= player and c and not teammate and distance <= val("ESPRange",500) and total < 24 then
+                total += 1; accepted[p] = true
+                local m = markers[p]
+                if m and m.Character ~= c then clearMarker(p); m = nil end
+                if not m then
+                    local highlight = Instance.new("Highlight", markerFolder)
+                    highlight.Name, highlight.Adornee, highlight.DepthMode = "PlayerMarker", c, Enum.HighlightDepthMode.AlwaysOnTop
+                    local gui = Instance.new("BillboardGui", hud)
+                    gui.Name, gui.AlwaysOnTop, gui.Size = "PlayerLabel", true, UDim2.fromOffset(240,54)
+                    gui.StudsOffsetWorldSpace = Vector3.new(0,3.5,0)
+                    local label = Instance.new("TextLabel", gui)
+                    label.BackgroundTransparency, label.Size = 1, UDim2.fromScale(1,1)
+                    label.Font, label.TextStrokeTransparency = Enum.Font.Code, 0.35
+                    m = {Highlight=highlight, Gui=gui, Label=label, Character=c}; markers[p] = m
+                end
+                local color = val("ESPColor",Color3.fromRGB(150,110,255))
+                local _,hint,hintColor=roleHint(p)
+                if on("ESPRoleColors") then color=hintColor end
+                m.Highlight.FillColor, m.Highlight.OutlineColor = color, color
+                m.Highlight.FillTransparency, m.Highlight.OutlineTransparency = val("ESPFill",0.8), 0
+                m.Gui.Adornee, m.Gui.MaxDistance = c:FindFirstChild("Head") or r, val("ESPRange",500)
+                local parts = {}
+                if on("ESPNames") then table.insert(parts, p.DisplayName) end
+                if on("ESPRoles") then table.insert(parts,hint) end
+                if on("ESPHealth") then table.insert(parts, string.format("HP %.0f/%.0f", h.Health,h.MaxHealth)) end
+                if on("ESPDistance") then table.insert(parts, string.format("%.0f studs",distance)) end
+                m.Label.Text, m.Label.TextColor3, m.Label.TextSize = table.concat(parts," | "), color, val("ESPText",14)
+                m.Gui.Enabled = #parts > 0
+            end
+        end
+        for p in pairs(markers) do if not accepted[p] then clearMarker(p) end end
+    end
+    local function cameraToggle(id, other, mode)
+        Toggles[id]:OnChanged(function()
+            if not ready then return end
+            if not on(id) then
+                if cameraState and cameraState.Mode == mode then releaseCamera() end
+                return
+            end
+            if on(other) then Toggles[other]:SetValue(false) end
+            if mode == "Free" then
+                resetCombat()
+                Library:Toggle(false)
+            end
+            if not startCamera(mode) then Toggles[id]:SetValue(false); notify("Camera or selected player is not ready") end
+        end)
+    end
+    cameraToggle("Freecam", "Spectate", "Free")
+    cameraToggle("Spectate", "Freecam", "Spectate")
+    Options.SpectatePlayer:OnChanged(function()
+        if ready and on("Spectate") and not startCamera("Spectate") then Toggles.Spectate:SetValue(false) end
+    end)
+    Toggles.AimAssist:OnChanged(function() resetCombat();targetMarker.Enabled=false;aimCircle.Visible=false end)
+    Toggles.GunESP:OnChanged(function() if ready then scanGuns() end end)
+    connect(workspace.DescendantAdded,function(object) if ready and on("GunESP") then rememberGun(object) end end)
+    Toggles.AntiShake:OnChanged(function() smoothCamera=nil end)
+    for id, poolName in pairs({Speed="Speed", CustomFOV="FOV"}) do
+        local name = poolName
+        Toggles[id]:OnChanged(function() if ready then restore(pools[name]) end end)
+    end
+    Toggles.ESP:OnChanged(function() if ready and not on("ESP") then clearMarkers() end end)
+    for _, id in ipairs({"Fullbright", "NoFog"}) do
+        Toggles[id]:OnChanged(function() if ready then restore(pools.Light) end end)
+    end
+    Toggles.HUD:OnChanged(function() frame.Visible = on("HUD") end)
+    connect(Players.PlayerAdded, refreshPlayers)
+    connect(Players.PlayerRemoving, function(p)
+        clearMarker(p)
+        -- PlayerRemoving fires before GetPlayers necessarily excludes the player.
+        for name, target in pairs(playerNames) do
+            if target == p then
+                if val("SpectatePlayer", "") == name then Toggles.Spectate:SetValue(false); Options.SpectatePlayer:SetValue(nil) end
+                if combatTarget==p then resetCombat() end
+                playerNames[name] = nil
+            end
+        end
+        task.defer(function() if ready and not closed then refreshPlayers() end end)
+    end)
+    connect(player.CharacterRemoving,function() resetCombat() end)
+    connect(player.CharacterAdded, function()
+        if not ready then return end
+        Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
+        restore(pools.Speed); resetCombat(); smoothCamera=nil
+    end)
+    connect(UIS.JumpRequest,jumpNow)
+    connect(UIS.InputBegan,function(input,processed)
+        if input.KeyCode==Enum.KeyCode.ButtonL2 and not processed and not menuBusy() then aimTrigger=true end
+        if input.KeyCode==Enum.KeyCode.Space and not processed then jumpNow() end
+    end)
+    local function updateAim(dt,camera)
+        local ownCharacter=character(player)
+        local subject=camera and camera.CameraSubject
+        local ownView=ownCharacter and subject and (subject==ownCharacter or subject:IsDescendantOf(ownCharacter))
+        local allowed=on("AimAssist") and camera and camera.CameraType~=Enum.CameraType.Scriptable
+            and ownView and not cameraState and not menuBusy()
+        aimCircle.Visible=allowed and on("AimCircle") or false
+        local diameter=val("AimRadius",110)*2;aimCircle.Size=UDim2.fromOffset(diameter,diameter)
+        if not allowed or not assistHeld() or (on("AimRequireWeapon") and not equippedWeapon()) then
+            resetCombat();targetMarker.Enabled=false;return
+        end
+        local target,point,model=chooseAimTarget(camera)
+        combatTarget=target
+        targetMarker.Adornee=model;targetMarker.Enabled=model~=nil and on("TargetHighlight")
+        if point then
+            local desired=CFrame.lookAt(camera.CFrame.Position,point)
+            camera.CFrame=camera.CFrame:Lerp(desired,1-math.exp(-val("AimSmoothing",8)*math.min(dt,0.1)))
+        end
+    end
+    local accumulator = 0
+    connect(RunService.Heartbeat, function(dt)
+        if not ready then return end
+        local _, h, r = character(player)
+        -- Old character references must not survive respawn or removal.
+        for object in pairs(pools.Speed) do if object ~= h then restore(pools.Speed); break end end
+        if h and on("Speed") and not on("Freecam") then
+            override(pools.Speed,h,"WalkSpeed",val("WalkSpeed",20))
+        elseif next(pools.Speed) then restore(pools.Speed) end
+        if on("Fullbright") then
+            override(pools.Light,Lighting,"Brightness",2)
+            override(pools.Light,Lighting,"Ambient",Color3.fromRGB(180,180,180))
+            override(pools.Light,Lighting,"OutdoorAmbient",Color3.fromRGB(180,180,180))
+            override(pools.Light,Lighting,"GlobalShadows",false)
+        end
+        if on("NoFog") then
+            override(pools.Light,Lighting,"FogStart",100000)
+            override(pools.Light,Lighting,"FogEnd",100000)
+        end
+        accumulator += dt
+        if accumulator < 0.15 then return end
+        accumulator = 0
+        updateMarkers();updateGuns()
+        local map,roundState=roundInfo()
+        mapLabel:SetText("Map: "..map);roundLabel:SetText("Round: "..roundState)
+        local _,myHint=roleHint(player);myRoleLabel:SetText("Tools: "..myHint)
+        serverLabel:SetText(string.format("Players: %d / %d",#Players:GetPlayers(),Players.MaxPlayers))
+        targetStatus:SetText(not on("AimAssist") and "Assist: off" or (combatTarget and "Target: "..combatTarget.DisplayName or "Assist: hold RMB / L2"))
+        if on("HUD") then
+            local speed = r and Vector3.new(r.AssemblyLinearVelocity.X,0,r.AssemblyLinearVelocity.Z).Magnitude or 0
+            local pos = r and r.Position or Vector3.zero
+            local name=combatTarget and combatTarget.DisplayName or "none"
+            text.Text = string.format("CLAUDEHUB  |  MM2 v%s\nSpeed: %.1f studs/s  |  HP: %.0f\nXYZ: %.0f  %.0f  %.0f\nTarget: %s",VERSION,speed,h and h.Health or 0,pos.X,pos.Y,pos.Z,name)
+            clampHUD(frame.Position.X.Offset,frame.Position.Y.Offset)
+        end
+    end)
+    RunService:BindToRenderStep("ClaudeHubMM2_Camera", Enum.RenderPriority.Last.Value + 100, function(dt)
+        if not ready then return end
+        local camera = workspace.CurrentCamera
+        if cameraState and cameraState.Camera ~= camera then
+            local mode = cameraState.Mode
+            releaseCamera()
+            if not startCamera(mode) then
+                Toggles.Freecam:SetValue(false); Toggles.Spectate:SetValue(false)
+            end
+        end
+        for object in pairs(pools.FOV) do if object ~= camera then restore(pools.FOV); break end end
+        if camera and on("CustomFOV") then override(pools.FOV,camera,"FieldOfView",val("FOV",80))
+        elseif next(pools.FOV) then restore(pools.FOV) end
+        if not cameraState then
+            if camera and on("AntiShake") then
+                local alpha=1-math.exp(-(100-val("Stabilize",70))*dt)
+                smoothCamera=smoothCamera and smoothCamera:Lerp(camera.CFrame,alpha) or camera.CFrame
+                camera.CFrame=smoothCamera
+            else smoothCamera=nil end
+            updateAim(dt,camera)
+            return
+        end
+        resetCombat();targetMarker.Enabled=false;aimCircle.Visible=false
+        smoothCamera=nil
+        if cameraState.Mode == "Spectate" then
+            local target = playerNames[val("SpectatePlayer", "")]
+            local subject
+            if target then local _, h = character(target); subject = h end
+            if not subject then Toggles.Spectate:SetValue(false); notify("Spectate target is unavailable"); return end
+            camera.CameraType, camera.CameraSubject = Enum.CameraType.Custom, subject
+            return
+        end
+        freeMoving = not menuBusy()
+        local _, h = character(player)
+        if h then
+            override(pools.Jump,h,"AutoRotate",false)
+            h:Move(Vector3.zero,false)
+        end
+        if freeMoving and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+            if not mouseState then mouseState = {Behavior=UIS.MouseBehavior,Icon=UIS.MouseIconEnabled} end
+            UIS.MouseBehavior, UIS.MouseIconEnabled = Enum.MouseBehavior.LockCurrentPosition, false
+        else releaseMouse() end
+        local rotation = CFrame.fromOrientation(freePitch, freeYaw, 0)
+        if freeMoving then
+            local function key(code) return UIS:IsKeyDown(code) and 1 or 0 end
+            local v = Vector3.new(key(Enum.KeyCode.D)-key(Enum.KeyCode.A),key(Enum.KeyCode.E)-key(Enum.KeyCode.Q),key(Enum.KeyCode.S)-key(Enum.KeyCode.W))
+            if v.Magnitude > 1 then v = v.Unit end
+            local multiplier = UIS:IsKeyDown(Enum.KeyCode.LeftShift) and 3 or 1
+            freePosition += rotation:VectorToWorldSpace(v) * val("FreecamSpeed",32) * multiplier * math.min(dt,0.1)
+        end
+        camera.CameraType = Enum.CameraType.Scriptable
+        camera.CFrame = CFrame.new(freePosition) * rotation
+        camera.Focus = camera.CFrame * CFrame.new(0,0,-512)
+    end)
+    refreshPlayers()
+    local function addon(path, fn)
+        local ok, err = pcall(function() fn(download(path)) end)
+        if not ok then warn("[ClaudeHub MM2] Optional addon unavailable: " .. path .. ": " .. tostring(err)) end
+    end
+    addon("addons/ThemeManager.lua", function(manager)
+        manager:SetLibrary(Library); manager:SetFolder("ClaudeHub/Obsidian"); manager:ApplyToTab(Tabs.Settings)
+    end)
+    addon("addons/SaveManager.lua", function(manager)
+        manager:SetLibrary(Library); manager:IgnoreThemeSettings()
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist"})
+        manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
+    end)
+    ready = true
+    notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
+end, function(err) return tostring(err) end)
+if not success then
+    cleanup()
+    pcall(function() Library:Unload() end)
+    error("[ClaudeHub MM2] Startup failed: " .. tostring(failure),0)
+end
+return Library
