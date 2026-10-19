@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.3 | Ordinary Obsidian (deividcomsono, MIT).
+-- ClaudeHub MM2 v0.1.4 | Ordinary Obsidian (deividcomsono, MIT).
 -- Ordinary Obsidian. Full Silent Aim port: Averiias, Stefanuk12, xaxa.
-local VERSION = "0.1.3"
+local VERSION = "0.1.4"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -82,7 +82,7 @@ local function override(pool, object, name, value)
     data.Applied = value
     if object[name] ~= value then object[name] = value end
 end
-for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light", "Fly", "Noclip"}) do pools[name] = {} end
+for _, name in ipairs({"Speed", "Jump", "FOV", "Facing", "Light", "Fly", "Noclip", "AntiFling"}) do pools[name] = {} end
 local function clearMarker(p)
     local m = markers[p]
     if m then m.Highlight:Destroy(); m.Gui:Destroy(); markers[p] = nil end
@@ -520,20 +520,21 @@ local SilentEngine=(function()
         return not engine.Destroyed and not closed and ready and engine.Settings.Enabled
             and focused and not cameraState and UIS:GetFocusedTextBox()==nil and Library.Toggled~=true
     end
-    local function fromCamera(scriptObject)
+    -- Fail closed: only code inside the currently equipped weapon may redirect.
+    -- Unknown callers, PlayerModule and shared/global modules are never patched.
+    local function weaponCaller(scriptObject)
         if typeof(scriptObject)~="Instance" then return false end
-        local scripts=player:FindFirstChild("PlayerScripts")
-        if not scripts or not scriptObject:IsDescendantOf(scripts) then return false end
-        local object=scriptObject
-        while object and object~=scripts do
-            local name=object.Name
-            if name=="PlayerModule" or name=="CameraModule" or name=="CameraScript" or name=="ControlModule" then return true end
-            object=object.Parent
+        local c=player.Character
+        if not c then return false end
+        for _,tool in ipairs(c:GetChildren()) do
+            if tool:IsA("Tool") and (tool.Name=="Gun" or tool.Name=="Knife") and scriptObject:IsDescendantOf(tool) then
+                return true
+            end
         end
         return false
     end
     local function rayResolver(method,args,caller)
-        if not active() or fromCamera(caller) then return nil end
+        if not active() or not weaponCaller(caller) then return nil end
         local chosen=engine.Settings.SilentAimMethod
         if method=="findPartOnRay" then method="FindPartOnRay" end
         if chosen~=method then return nil end
@@ -551,7 +552,7 @@ local SilentEngine=(function()
         return args
     end
     local function indexResolver(index,caller)
-        if not active() or fromCamera(caller) or engine.Settings.SilentAimMethod~="Mouse.Hit/Target" then return false end
+        if not active() or not weaponCaller(caller) or engine.Settings.SilentAimMethod~="Mouse.Hit/Target" then return false end
         if type(index)~="string" then return false end
         index=index:lower()
         if index~="target" and index~="hit" and index~="unitray" then return false end
@@ -583,14 +584,14 @@ local SilentEngine=(function()
         end
     end
     function engine:Install()
-        if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" then
-            return false,"hookmetamethod / getnamecallmethod / checkcaller unavailable"
+        if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" or type(getcallingscript)~="function" then
+            return false,"Silent Aim needs hookmetamethod, getnamecallmethod, checkcaller and getcallingscript; unsafe global hooks disabled"
         end
         self.LastError=""
         -- Retire only the older ClaudeHub-specific resolvers, not other scripts.
-        for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook"}) do
+        for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook","__ClaudeHubMM2SilentFullNamecall_v1","__ClaudeHubMM2SilentFullIndex_v1"}) do
             local previousState=env[key]
-            if type(previousState)=="table" then previousState.Resolve=nil end
+            if type(previousState)=="table" then previousState.Resolve=nil;previousState.RecordError=nil end
         end
         local wrap=type(newcclosure)=="function" and newcclosure or function(fn) return fn end
         local getMethod,isCaller=getnamecallmethod,checkcaller
@@ -598,7 +599,7 @@ local SilentEngine=(function()
         local function callerScript()
             if getScript then local ok,scriptObject=pcall(getScript);if ok then return scriptObject end end
         end
-        local rayState=env.__ClaudeHubMM2SilentFullNamecall_v1
+        local rayState=env.__ClaudeHubMM2SilentFullNamecall_v2
         if not rayState or not rayState.Installed then
             rayState={};local state=rayState
             local oldNamecall
@@ -617,11 +618,11 @@ local SilentEngine=(function()
             end
             local ok,previous=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
             if not ok or type(previous)~="function" then return false,tostring(previous) end
-            oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullNamecall_v1=state
+            oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullNamecall_v2=state
         end
         self.OwnedStates.Ray=rayState
         rayState.Owner=self;rayState.Resolve=rayResolver;rayState.RecordError=recordError
-        local indexState=env.__ClaudeHubMM2SilentFullIndex_v1
+        local indexState=env.__ClaudeHubMM2SilentFullIndex_v2
         if not indexState or not indexState.Installed then
             indexState={};local state=indexState
             local oldIndex
@@ -639,7 +640,7 @@ local SilentEngine=(function()
                 rayState.Resolve=nil;rayState.RecordError=nil;rayState.Owner=nil
                 return false,"Mouse index hook: "..tostring(previous)
             end
-            oldIndex=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullIndex_v1=state
+            oldIndex=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullIndex_v2=state
         end
         self.OwnedStates.Index=indexState
         indexState.Owner=self;indexState.Resolve=indexResolver;indexState.RecordError=recordError
@@ -760,6 +761,115 @@ end)()
 local silentStatus
 local function stopSilent() SilentEngine:Stop() end
 
+local antiFlingRoot,antiFlingSafe,antiFlingSafeAt
+local antiFlingScanAt=-math.huge
+local function clearAntiFling()
+    restore(pools.AntiFling)
+    antiFlingRoot,antiFlingSafe,antiFlingSafeAt=nil,nil,nil
+    antiFlingScanAt=-math.huge
+end
+local function updateAntiFling()
+    if not ready or not on("AntiFling") then
+        if next(pools.AntiFling) or antiFlingRoot then clearAntiFling() end
+        return
+    end
+    local c,h,r=character(player)
+    if not c then clearAntiFling();return end
+    if antiFlingRoot~=r then clearAntiFling();antiFlingRoot=r end
+    if os.clock()-antiFlingScanAt>=0.2 then
+        antiFlingScanAt=os.clock()
+        local accepted={}
+        for _,other in ipairs(Players:GetPlayers()) do
+            if other==player or not other.Character then continue end
+            for _,part in ipairs(other.Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    accepted[part]=true
+                    if part.CanCollide or pools.AntiFling[part] then override(pools.AntiFling,part,"CanCollide",false) end
+                end
+            end
+        end
+        local stale={}
+        for object in pairs(pools.AntiFling) do if not accepted[object] then stale[object]=pools.AntiFling[object];pools.AntiFling[object]=nil end end
+        restore(stale)
+    end
+    for part in pairs(pools.AntiFling) do
+        if part.Parent then override(pools.AntiFling,part,"CanCollide",false) end
+    end
+    if r.Anchored or h.Sit then return end
+    local speed=r.AssemblyLinearVelocity.Magnitude
+    local spin=r.AssemblyAngularVelocity.Magnitude
+    if speed>val("FlingSpeedLimit",180) or spin>val("FlingSpinLimit",60) then
+        r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
+        if on("FlingRecovery") and not on("Fly") and antiFlingSafe and os.clock()-antiFlingSafeAt<2 then
+            r.CFrame=antiFlingSafe
+        end
+    elseif not on("Fly") and h.FloorMaterial~=Enum.Material.Air and speed<80 and spin<15 then
+        antiFlingSafe=r.CFrame;antiFlingSafeAt=os.clock()
+    end
+end
+local grabState
+local function finishGrab()
+    local state=grabState
+    if not state then return end
+    grabState=nil
+    if state.TouchStarted and type(firetouchinterest)=="function" then
+        pcall(function() firetouchinterest(state.Root,state.Part,1) end)
+    end
+    pcall(function()
+        if not state.Object:IsDescendantOf(workspace) or gunInInventory(state.Object) then return end
+        if state.IsModel then
+            if (state.Object:GetPivot().Position-state.Applied.Position).Magnitude<0.1 then state.Object:PivotTo(state.Original) end
+        elseif (state.Part.Position-state.Applied.Position).Magnitude<0.1 then
+            state.Part.CFrame=state.Original
+        end
+    end)
+end
+local function gunHitbox(object)
+    if object:IsA("BasePart") then return object end
+    for _,descendant in ipairs(object:GetDescendants()) do
+        if descendant:IsA("TouchTransmitter") and descendant.Parent and descendant.Parent:IsA("BasePart") then return descendant.Parent end
+    end
+    local handle=object:FindFirstChild("Handle",true)
+    if handle and handle:IsA("BasePart") then return handle end
+    return object:FindFirstChildWhichIsA("BasePart",true)
+end
+local function grabGun()
+    if grabState then notify("Grab Gun: wait for the current attempt");return end
+    local _,_,root=character(player)
+    if not root then notify("Grab Gun: character unavailable");return end
+    local selected,part,best
+    for _,object in ipairs(workspace:GetDescendants()) do
+        if object.Name:lower()~="gundrop" or not (object:IsA("Model") or object:IsA("BasePart")) or gunInInventory(object) then continue end
+        local hitbox=gunHitbox(object)
+        if hitbox then
+            local distance=(hitbox.Position-root.Position).Magnitude
+            if not best or distance<best then selected,part,best=object,hitbox,distance end
+        end
+    end
+    if not selected then notify("Grab Gun: no streamed GunDrop found");return end
+    local state={Object=selected,Part=part,Root=root,IsModel=selected:IsA("Model")}
+    state.Original=state.IsModel and selected:GetPivot() or part.CFrame
+    state.Applied=state.IsModel and (root.CFrame*part.CFrame:Inverse()*state.Original) or root.CFrame
+    grabState=state
+    local ok,err=pcall(function()
+        if state.IsModel then selected:PivotTo(state.Applied) else part.CFrame=state.Applied end
+        if type(firetouchinterest)=="function" then
+            state.TouchStarted=true
+            firetouchinterest(root,part,0)
+        end
+    end)
+    if not ok then finishGrab();notify("Grab Gun: "..tostring(err));return end
+    task.delay(0.4,function()
+        if grabState~=state then return end
+        finishGrab()
+        if not closed then
+            local _,hasGun=toolsIn(player.Character)
+            local _,storedGun=toolsIn(player:FindFirstChildOfClass("Backpack"))
+            notify((hasGun or storedGun) and "Gun observed in inventory" or "Grab attempted; server pickup not confirmed")
+        end
+    end)
+end
+
 local function jumpNow()
     if not ready or not on("InfiniteJump") or on("Freecam") or on("Fly") or menuBusy() or os.clock()-lastJump < 0.12 then return end
     local _,h,r = character(player)
@@ -772,7 +882,7 @@ end
 local function cleanup()
     if closed then return end
     closed, ready = true, false
-    SilentEngine:Destroy();stopFly();clearRoles(nil)
+    SilentEngine:Destroy();finishGrab();clearAntiFling();stopFly();clearRoles(nil)
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
     RunService:UnbindFromRenderStep("ClaudeHubMM2_Camera")
@@ -849,6 +959,12 @@ local success, failure = xpcall(function()
     toggle(char,"Fly","Fly","F")
     slider(char,"FlySpeed","Fly Speed",45,5,150)
     toggle(char,"Noclip","Noclip","N")
+    local protection=Tabs.Character:AddRightGroupbox("Protection / Pickup","shield")
+    toggle(protection,"AntiFling","Anti Fling","P")
+    slider(protection,"FlingSpeedLimit","Velocity limit",180,100,500)
+    slider(protection,"FlingSpinLimit","Spin limit",60,20,200)
+    toggle(protection,"FlingRecovery","Return to recent safe position")
+    action(protection,"Grab Gun",grabGun,"K","GrabGunBind")
     local hudBox = Tabs.Character:AddRightGroupbox("HUD", "monitor")
     toggle(hudBox, "HUD", "MM2 HUD", "F9")
     local visuals = Tabs.Visuals:AddLeftGroupbox("Players", "users")
@@ -902,7 +1018,8 @@ local success, failure = xpcall(function()
     targetBox:AddDropdown("AimPoint",{Text="Aim point",Values={"UpperTorso","Head","HumanoidRootPart"},Default=1})
     targetBox:AddDropdown("AimRole",{Text="Target filter",Values={"Any visible player","Murderer","Sheriff / Hero"},Default=1})
     slider(targetBox,"AimRadius","Assist radius (pixels)",110,25,300)
-    slider(targetBox,"AimSmoothing","Camera smoothing",8,1,25)
+    slider(targetBox,"AimSmoothing","Tracking strength",55,10,120)
+    toggle(targetBox,"AimHardLock","Hard Lock")
     slider(targetBox,"AimRange","Max distance (studs)",180,20,500)
     slider(targetBox,"AimPrediction","Movement prediction",0,0,0.2,2)
     toggle(targetBox,"AimRequireWeapon","Require equipped weapon")
@@ -943,7 +1060,8 @@ local success, failure = xpcall(function()
     silentInfo:AddLabel("Universal Silent Aim")
     silentInfo:AddLabel("Averiias / Stefanuk12 / xaxa")
     silentInfo:AddLabel("Full source functionality; Obsidian interface")
-    silentInfo:AddLabel(SilentEngine.CameraFilterAvailable and "Camera script filter: available" or "Camera script filter: API unavailable")
+    silentInfo:AddLabel(SilentEngine.CameraFilterAvailable and "Weapon-only caller filter: available" or "Weapon-only caller filter: unavailable; Silent Aim disabled")
+    silentInfo:AddLabel("Only equipped Gun/Knife scripts; unknown callers blocked")
     local silentCounter=silentInfo:AddLabel("Matching calls: 0 | redirected: 0")
     local silentError=silentInfo:AddLabel("Last error: none")
     local configs=Tabs.Silent:AddRightGroupbox("Configurations","save")
@@ -1275,6 +1393,8 @@ local success, failure = xpcall(function()
     for _,object in ipairs(ReplicatedStorage:GetDescendants()) do bindRoundRemote(object) end
     connect(ReplicatedStorage.DescendantAdded,bindRoundRemote)
     connect(RunService.PreSimulation,updateMovement)
+    connect(RunService.PreSimulation,updateAntiFling)
+    Toggles.AntiFling:OnChanged(function() if ready and not on("AntiFling") then clearAntiFling() end end)
     Toggles.AimAssist:OnChanged(function() resetCombat();targetMarker.Enabled=false;aimCircle.Visible=false end)
     Toggles.GunESP:OnChanged(function() if ready then scanGuns() end end)
     connect(workspace.DescendantAdded,function(object) if ready and on("GunESP") then rememberGun(object) end end)
@@ -1302,7 +1422,7 @@ local success, failure = xpcall(function()
         task.defer(function() if ready and not closed then refreshPlayers() end end)
     end)
     connect(player.CharacterRemoving,function()
-        resetCombat();stopFly();restore(pools.Noclip)
+        resetCombat();finishGrab();clearAntiFling();stopFly();restore(pools.Noclip)
         if ready then Toggles.Fly:SetValue(false) end
     end)
     connect(player.CharacterAdded, function()
@@ -1332,13 +1452,15 @@ local success, failure = xpcall(function()
         targetMarker.Adornee=model;targetMarker.Enabled=model~=nil and on("TargetHighlight")
         if point then
             local desired=CFrame.lookAt(camera.CFrame.Position,point)
-            camera.CFrame=camera.CFrame:Lerp(desired,1-math.exp(-val("AimSmoothing",8)*math.min(dt,0.1)))
+            local alpha=on("AimHardLock") and 1 or 1-math.exp(-val("AimSmoothing",55)*math.min(dt,0.1))
+            camera.CFrame=camera.CFrame:Lerp(desired,alpha)
         end
     end
     local accumulator = 0
     connect(RunService.Heartbeat, function(dt)
         if not ready then return end
         local _, h, r = character(player)
+        updateAntiFling()
         -- Old character references must not survive respawn or removal.
         for object in pairs(pools.Speed) do if object ~= h then restore(pools.Speed); break end end
         if h and on("Speed") and not on("Freecam") and not on("Fly") then
@@ -1388,10 +1510,15 @@ local success, failure = xpcall(function()
         if camera and on("CustomFOV") then override(pools.FOV,camera,"FieldOfView",val("FOV",80))
         elseif next(pools.FOV) then restore(pools.FOV) end
         if not cameraState then
-            if camera and on("AntiShake") and not on("SilentAim") then
+            local ownCharacter=character(player)
+            local subject=camera and camera.CameraSubject
+            local ownView=ownCharacter and subject and (subject==ownCharacter or subject:IsDescendantOf(ownCharacter))
+            if camera and ownView and camera.CameraType~=Enum.CameraType.Scriptable and not menuBusy()
+                and on("AntiShake") and not on("SilentAim") and not on("AimAssist") then
                 local alpha=1-math.exp(-(100-val("Stabilize",70))*dt)
-                smoothCamera=smoothCamera and smoothCamera:Lerp(camera.CFrame,alpha) or camera.CFrame
-                camera.CFrame=smoothCamera
+                local rotation=camera.CFrame.Rotation
+                smoothCamera=smoothCamera and smoothCamera:Lerp(rotation,alpha) or rotation
+                camera.CFrame=CFrame.new(camera.CFrame.Position)*smoothCamera
             else smoothCamera=nil end
             updateAim(dt,camera)
             return
@@ -1438,11 +1565,11 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","RoundDetection","SilentConfigName","SilentConfigChoice"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","AntiFling","AimHardLock","RoundDetection","SilentConfigName","SilentConfigChoice"})
         manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
-    for _,id in ipairs({"Fly","Noclip","SilentAim"}) do Toggles[id]:SetValue(false) end
+    for _,id in ipairs({"Fly","Noclip","SilentAim","AntiFling"}) do Toggles[id]:SetValue(false) end
     Options.RoundDetection:SetValue("Auto")
     -- Match the supplied MM2 preset at startup, including after an older config.
     Toggles.SilentTeamCheck:SetValue(false)
@@ -1451,6 +1578,7 @@ local success, failure = xpcall(function()
     Options.SilentMethod:SetValue("Raycast")
     Options.SilentHitChance:SetValue(100)
     Options.SilentRadius:SetValue(130)
+    Options.AimSmoothing:SetValue(55)
     SilentEngine.Settings.Enabled=false
     notify("ClaudeHub MM2 v" .. VERSION .. " loaded. RightControl: menu.")
 end, function(err) return tostring(err) end)
