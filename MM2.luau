@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.6 | Ordinary Obsidian (deividcomsono, MIT).
--- Ordinary Obsidian. Full Silent Aim port: Averiias, Stefanuk12, xaxa.
-local VERSION = "0.1.6"
+-- ClaudeHub MM2 v0.1.7 | Ordinary Obsidian (deividcomsono, MIT).
+-- Ordinary Obsidian. Targeting adapted from Averiias, Stefanuk12, xaxa; MM2-scoped transport.
+local VERSION = "0.1.7"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -461,21 +461,21 @@ local function updateMovement()
     elseif next(pools.Noclip) then restore(pools.Noclip) end
 end
 
--- Full functional port of the supplied Universal Silent Aim main.lua.
+-- Target selection from the supplied Universal Silent Aim, with MM2-specific shot transport.
 -- Original authors: Averiias, Stefanuk12, xaxa. Standalone Linoria UI removed.
 local SilentEngine=(function()
     local engine={
         Settings={Enabled=false,ClassName="Universal Silent Aim - Averiias, Stefanuk12, xaxa",
-            ToggleKey="B",TeamCheck=false,VisibleCheck=true,TargetPart="HumanoidRootPart",SilentAimMethod="Raycast",
+            ToggleKey="B",TeamCheck=false,VisibleCheck=true,TargetPart="HumanoidRootPart",SilentAimMethod="MM2 Gun",
             FOVRadius=130,FOVVisible=false,ShowSilentAimTarget=false,MouseHitPrediction=false,
             MouseHitPredictionAmount=0.165,HitChance=100,TargetRole="All players (original)"},
         Color=Color3.fromRGB(54,57,241),TargetColor=Color3.fromRGB(54,57,241),
-        LastError="",Seen=0,Redirected=0,
+        LastError="",Seen=0,Redirected=0,LastCall="none",WeaponStatus="Equip Gun",
         ConfigPaths={},OwnedStates={},Destroyed=false,
     }
     local Mouse=player:GetMouse()
     local random=Random.new()
-    local methods={Raycast=true,FindPartOnRay=true,FindPartOnRayWithWhitelist=true,
+    local methods={["MM2 Gun"]=true,Raycast=true,FindPartOnRay=true,FindPartOnRayWithWhitelist=true,
         FindPartOnRayWithIgnoreList=true,["Mouse.Hit/Target"]=true}
     local ExpectedArguments={
         FindPartOnRayWithIgnoreList={ArgCountRequired=3,Args={"Instance","Ray","table","boolean","boolean"}},
@@ -549,11 +549,55 @@ local SilentEngine=(function()
         return not engine.Destroyed and not closed and ready and engine.Settings.Enabled
             and focused and not cameraState and UIS:GetFocusedTextBox()==nil and Library.Toggled~=true
     end
-    -- Original source scope: workspace rays and Mouse reads from game callers.
-    -- No equipped-tool whitelist; shared modules are intentionally supported.
-    local function rayResolver(method,args)
+    local function gunRemote()
+        local c=player.Character
+        local gun=c and c:FindFirstChild("Gun")
+        if not gun or not gun:IsA("Tool") then return nil,"Equip Gun" end
+        local script=gun:FindFirstChild("KnifeLocal")
+        local beam=script and script:FindFirstChild("CreateBeam")
+        if not beam then return nil,"Gun: CreateBeam not found" end
+        -- Known MM2 layout: Gun.KnifeLocal.CreateBeam.RemoteFunction.
+        -- Some builds expose CreateBeam itself as the remote. No generic remote guessing.
+        local remote=beam:FindFirstChild("RemoteFunction")
+        if remote and remote:IsA("RemoteFunction") then return remote,"MM2 remote ready" end
+        if beam:IsA("RemoteFunction") or beam:IsA("RemoteEvent") then return beam,"MM2 remote ready" end
+        return nil,"Gun: unsupported CreateBeam layout"
+    end
+    local function weaponCaller(caller)
+        if typeof(caller)~="Instance" then return false end
+        local c=player.Character
+        if not c then return false end
+        for _,name in ipairs({"Gun","Knife"}) do
+            local tool=c:FindFirstChild(name)
+            if tool and tool:IsA("Tool") and caller:IsDescendantOf(tool) then return true end
+        end
+        return false
+    end
+    local function rayResolver(method,args,caller)
         if not active() then return nil end
         local chosen=engine.Settings.SilentAimMethod
+        if chosen=="MM2 Gun" then
+            if method~="InvokeServer" and method~="FireServer" then return nil end
+            local remote,status=gunRemote();engine.WeaponStatus=status
+            if not remote or args[1]~=remote then return nil end
+            if (remote:IsA("RemoteFunction") and method~="InvokeServer")
+                or (remote:IsA("RemoteEvent") and method~="FireServer") then return nil end
+            engine.Seen+=1
+            -- Preserve the original call/arity. Only the known target-position field changes.
+            if args.n~=4 or args[2]~=1 or typeof(args[3])~="Vector3" or args[4]~="AH2" then
+                engine.LastError="Unsupported MM2 shot signature; left unchanged"
+                return nil
+            end
+            engine.LastCall="Gun / "..method.." (1, Vector3, AH2)"
+            if not CalculateChance(engine.Settings.HitChance) then return nil end
+            local hitPart=getClosestPlayer()
+            if not hitPart then return nil end
+            args[3]=hitPart.Position
+            engine.LastError="";engine.Redirected+=1
+            return args
+        end
+        -- Legacy compatibility modes FAIL CLOSED. Camera/shared/unknown callers are never changed.
+        if not weaponCaller(caller) or args[1]~=workspace then return nil end
         if method=="findPartOnRay" then method="FindPartOnRay" end
         if chosen~=method then return nil end
         engine.Seen+=1
@@ -563,27 +607,29 @@ local SilentEngine=(function()
         local hitPart=getClosestPlayer()
         if not hitPart then return nil end
         local origin=method=="Raycast" and args[2] or args[2].Origin
-        local direction=getDirection(origin,hitPart.Position)
-        if not direction then return nil end
+        local originalDirection=method=="Raycast" and args[3] or args[2].Direction
+        local offset=hitPart.Position-origin
+        if offset.Magnitude<0.001 or originalDirection.Magnitude<0.001 then return nil end
+        local direction=offset.Unit*originalDirection.Magnitude
         if method=="Raycast" then args[3]=direction else args[2]=Ray.new(origin,direction) end
+        engine.LastCall="Weapon script / "..method
         engine.Redirected+=1
         return args
     end
-    local function indexResolver(index)
-        if not active() or engine.Settings.SilentAimMethod~="Mouse.Hit/Target" then return false end
+    local function indexResolver(index,caller)
+        if not active() or engine.Settings.SilentAimMethod~="Mouse.Hit/Target" or not weaponCaller(caller) then return false end
         if type(index)~="string" then return false end
         index=index:lower()
         if index~="target" and index~="hit" and index~="unitray" then return false end
         engine.Seen+=1
+        if not CalculateChance(engine.Settings.HitChance) then return false end
         local hitPart=getClosestPlayer()
         if not hitPart then return false end
         engine.Redirected+=1
         if index=="target" then return true,hitPart end
         if index=="hit" then
             local cf=hitPart.CFrame
-            if engine.Settings.MouseHitPrediction then
-                cf+=hitPart.AssemblyLinearVelocity*engine.Settings.MouseHitPredictionAmount
-            end
+            if engine.Settings.MouseHitPrediction then cf+=hitPart.AssemblyLinearVelocity*engine.Settings.MouseHitPredictionAmount end
             return true,cf
         end
         local camera=workspace.CurrentCamera
@@ -598,6 +644,7 @@ local SilentEngine=(function()
         engine.LastError=tostring(err):sub(1,220)
     end
     function engine:RefreshTarget()
+        local _,status=gunRemote();self.WeaponStatus=status
         if active() then return getClosestPlayer() end
         self.Target=nil
         return nil
@@ -613,26 +660,41 @@ local SilentEngine=(function()
         if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" or type(checkcaller)~="function" then
             return false,"Silent Aim needs hookmetamethod, getnamecallmethod and checkcaller"
         end
+        if self.Settings.SilentAimMethod~="MM2 Gun" and type(getcallingscript)~="function" then
+            return false,"Legacy mode needs getcallingscript; use MM2 Gun"
+        end
         self.LastError=""
-        -- Retire only the older ClaudeHub-specific resolvers, not other scripts.
-        for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook","__ClaudeHubMM2SilentFullNamecall_v1","__ClaudeHubMM2SilentFullIndex_v1","__ClaudeHubMM2SilentFullNamecall_v2","__ClaudeHubMM2SilentFullIndex_v2"}) do
+        -- Old global hooks cannot reliably be removed. Make ClaudeHub-owned resolvers passive.
+        for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook",
+            "__ClaudeHubMM2SilentFullNamecall_v1","__ClaudeHubMM2SilentFullIndex_v1",
+            "__ClaudeHubMM2SilentFullNamecall_v2","__ClaudeHubMM2SilentFullIndex_v2",
+            "__ClaudeHubMM2SilentFullNamecall_v3","__ClaudeHubMM2SilentFullIndex_v3"}) do
             local previousState=env[key]
-            if type(previousState)=="table" then previousState.Resolve=nil;previousState.RecordError=nil end
+            if type(previousState)=="table" then previousState.Resolve=nil;previousState.RecordError=nil;previousState.Owner=nil end
         end
         local wrap=type(newcclosure)=="function" and newcclosure or function(fn) return fn end
         local getMethod,isCaller=getnamecallmethod,checkcaller
-        local rayState=env.__ClaudeHubMM2SilentFullNamecall_v3
+        local callerAPI=type(getcallingscript)=="function" and getcallingscript or nil
+        local function captureCaller()
+            if not callerAPI then return nil end
+            local ok,value=pcall(callerAPI)
+            if ok then return value end
+            return nil
+        end
+        local rayState=env.__ClaudeHubMM2SilentFullNamecall_v4
         if not rayState or not rayState.Installed then
-            rayState={};local state=rayState
-            local oldNamecall
+            rayState={};local state=rayState;local oldNamecall
             local function intercept(...)
                 local method=getMethod()
-                local self=select(1,...)
-                if state.Resolve and self==workspace and not isCaller()
-                    and (method=="Raycast" or method=="FindPartOnRay" or method=="findPartOnRay"
+                if state.Resolve and not state.Busy and not isCaller()
+                    and (method=="InvokeServer" or method=="FireServer" or method=="Raycast"
+                        or method=="FindPartOnRay" or method=="findPartOnRay"
                         or method=="FindPartOnRayWithIgnoreList" or method=="FindPartOnRayWithWhitelist") then
                     local args=table.pack(...)
-                    local ok,modified=pcall(state.Resolve,method,args)
+                    local caller=state.NeedsCaller and captureCaller() or nil
+                    state.Busy=true
+                    local ok,modified=pcall(state.Resolve,method,args,caller)
+                    state.Busy=false
                     if ok and modified then return oldNamecall(table.unpack(modified,1,modified.n)) end
                     if not ok and state.RecordError then state.RecordError(modified) end
                 end
@@ -640,32 +702,37 @@ local SilentEngine=(function()
             end
             local ok,previous=pcall(function() return hookmetamethod(game,"__namecall",wrap(intercept)) end)
             if not ok or type(previous)~="function" then return false,tostring(previous) end
-            oldNamecall=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullNamecall_v3=state
+            oldNamecall=previous;rayState.Installed=true;env.__ClaudeHubMM2SilentFullNamecall_v4=rayState
         end
         self.OwnedStates.Ray=rayState
+        rayState.NeedsCaller=self.Settings.SilentAimMethod~="MM2 Gun"
         rayState.Owner=self;rayState.Resolve=rayResolver;rayState.RecordError=recordError
-        local indexState=env.__ClaudeHubMM2SilentFullIndex_v3
-        if not indexState or not indexState.Installed then
-            indexState={};local state=indexState
-            local oldIndex
-            local mouse=Mouse
-            local function intercept(self,index)
-                if state.Resolve and self==mouse and not isCaller() then
-                    local ok,handled,value=pcall(state.Resolve,index)
-                    if ok and handled then return value end
-                    if not ok and state.RecordError then state.RecordError(handled) end
+        -- Default MM2 Gun mode installs NO Mouse.__index hook.
+        if self.Settings.SilentAimMethod=="Mouse.Hit/Target" then
+            local indexState=env.__ClaudeHubMM2SilentFullIndex_v4
+            if not indexState or not indexState.Installed then
+                indexState={};local state=indexState;local oldIndex;local mouse=Mouse
+                local function intercept(self,index)
+                    if state.Resolve and not state.Busy and self==mouse and not isCaller() then
+                        local caller=captureCaller()
+                        state.Busy=true
+                        local ok,handled,value=pcall(state.Resolve,index,caller)
+                        state.Busy=false
+                        if ok and handled then return value end
+                        if not ok and state.RecordError then state.RecordError(handled) end
+                    end
+                    return oldIndex(self,index)
                 end
-                return oldIndex(self,index)
+                local ok,previous=pcall(function() return hookmetamethod(game,"__index",wrap(intercept)) end)
+                if not ok or type(previous)~="function" then
+                    rayState.Resolve=nil;rayState.RecordError=nil;rayState.Owner=nil
+                    return false,"Mouse index hook: "..tostring(previous)
+                end
+                oldIndex=previous;indexState.Installed=true;env.__ClaudeHubMM2SilentFullIndex_v4=indexState
             end
-            local ok,previous=pcall(function() return hookmetamethod(game,"__index",wrap(intercept)) end)
-            if not ok or type(previous)~="function" then
-                rayState.Resolve=nil;rayState.RecordError=nil;rayState.Owner=nil
-                return false,"Mouse index hook: "..tostring(previous)
-            end
-            oldIndex=previous;state.Installed=true;env.__ClaudeHubMM2SilentFullIndex_v3=state
+            self.OwnedStates.Index=indexState
+            indexState.Owner=self;indexState.Resolve=indexResolver;indexState.RecordError=recordError
         end
-        self.OwnedStates.Index=indexState
-        indexState.Owner=self;indexState.Resolve=indexResolver;indexState.RecordError=recordError
         self.Settings.Enabled=true
         return true
     end
@@ -1282,6 +1349,16 @@ local success, failure = xpcall(function()
     slider(cam, "Stabilize", "Stabilization", 70, 10, 95)
     toggle(cam, "Freecam", "Freecam", "F6")
     slider(cam, "FreecamSpeed", "Freecam Speed", 32, 5, 150)
+    action(cam,"Restore Character Camera",function()
+        Toggles.Freecam:SetValue(false);Toggles.Spectate:SetValue(false)
+        releaseCamera();releaseMouse();smoothCamera=nil
+        local camera=workspace.CurrentCamera
+        local _,h=character(player)
+        if camera and h then
+            camera.CameraType=Enum.CameraType.Custom;camera.CameraSubject=h
+            UIS.MouseBehavior=Enum.MouseBehavior.Default;UIS.MouseIconEnabled=true
+        end
+    end)
     local watch = Tabs.Camera:AddRightGroupbox("Spectate", "users")
     watch:AddDropdown("SpectatePlayer", {Text="Player", Values={}, AllowNull=true})
     toggle(watch, "Spectate", "Spectate Player", "F7")
@@ -1338,7 +1415,7 @@ local success, failure = xpcall(function()
     toggle(silentBox,"SilentVisibleCheck","Visible Check")
     Toggles.SilentVisibleCheck:SetValue(true)
     silentBox:AddDropdown("SilentPoint",{Text="Target Part",Values={"Head","HumanoidRootPart","Random"},Default=2})
-    silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"Raycast","FindPartOnRay","FindPartOnRayWithWhitelist","FindPartOnRayWithIgnoreList","Mouse.Hit/Target"},Default=1})
+    silentBox:AddDropdown("SilentMethod",{Text="Silent Aim Method",Values={"MM2 Gun","Raycast","FindPartOnRay","FindPartOnRayWithWhitelist","FindPartOnRayWithIgnoreList","Mouse.Hit/Target"},Default=1})
     slider(silentBox,"SilentHitChance","Hit chance",100,0,100,1)
     silentStatus=silentBox:AddLabel("Silent Aim: off")
     local silentTargetStatus=silentBox:AddLabel("Target: none")
@@ -1352,11 +1429,12 @@ local success, failure = xpcall(function()
     toggle(silentPrediction,"SilentPredictionEnabled","Mouse.Hit/Target Prediction")
     slider(silentPrediction,"SilentPredictionAmount","Prediction Amount",0.165,0.165,1,3)
     local silentInfo=Tabs.Combat:AddRightGroupbox("Credits / Status","info")
-    silentInfo:AddLabel("Universal Silent Aim")
+    silentInfo:AddLabel("MM2-scoped Silent Aim")
     silentInfo:AddLabel("Averiias / Stefanuk12 / xaxa")
-    silentInfo:AddLabel("Full source functionality; Obsidian interface")
-    silentInfo:AddLabel("Original hook scope: all game workspace rays")
-    silentInfo:AddLabel("Global ray interception may affect the game camera")
+    silentInfo:AddLabel("MM2 Gun: only equipped Gun CreateBeam calls")
+    silentInfo:AddLabel("Legacy modes: weapon-script callers only")
+    local silentWeaponStatus=silentInfo:AddLabel("Weapon: Equip Gun")
+    local silentLastCall=silentInfo:AddLabel("Last shot call: none")
     local silentCounter=silentInfo:AddLabel("Matching calls: 0 | redirected: 0")
     local silentError=silentInfo:AddLabel("Last error: none")
     local configs=Tabs.Combat:AddRightGroupbox("Configurations","save")
@@ -1688,6 +1766,13 @@ local success, failure = xpcall(function()
         end
         silentStatus:SetText("Enabled: "..SilentEngine.Settings.SilentAimMethod)
     end)
+    Options.SilentMethod:OnChanged(function()
+        SilentEngine.Settings.SilentAimMethod=val("SilentMethod","MM2 Gun")
+        if not ready or not on("SilentAim") then return end
+        stopSilent()
+        local ok,reason=SilentEngine:Install()
+        if not ok then Toggles.SilentAim:SetValue(false);notify("Silent Aim unavailable: "..tostring(reason)) end
+    end)
     Options.RoundDetection:OnChanged(function() roles={};rolesAt=-math.huge;rolePollAt=-math.huge;rolesGeneration+=1;resetCombat() end)
     for _,object in ipairs(ReplicatedStorage:GetDescendants()) do bindRoundRemote(object) end
     connect(ReplicatedStorage.DescendantAdded,bindRoundRemote)
@@ -1810,6 +1895,8 @@ local success, failure = xpcall(function()
         pollRoles();updateMarkers();updateGuns();updateAlerts(r)
         SilentEngine:RefreshTarget()
         silentCounter:SetText(string.format("Matching calls: %d | redirected: %d",SilentEngine.Seen,SilentEngine.Redirected))
+        silentWeaponStatus:SetText("Weapon: "..SilentEngine.WeaponStatus)
+        silentLastCall:SetText("Last shot call: "..SilentEngine.LastCall)
         silentError:SetText("Last error: "..(SilentEngine.LastError~="" and SilentEngine.LastError or "none"))
         silentStatus:SetText(not on("SilentAim") and "Silent Aim: off" or (menuBusy() or cameraState) and "Silent Aim: paused" or ("Enabled: "..SilentEngine.Settings.SilentAimMethod))
         silentTargetStatus:SetText("Target: "..(SilentEngine.Target and SilentEngine.Target.DisplayName or "none"))
@@ -1896,7 +1983,7 @@ local success, failure = xpcall(function()
     end)
     addon("addons/SaveManager.lua", function(manager)
         manager:SetLibrary(Library); manager:IgnoreThemeSettings()
-        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","AntiFling","AimHardLock","RoundDetection","SilentConfigName","SilentConfigChoice","CustomGravity","JumpPower","Sprint","NoAcceleration","FakeWallhop","ClickTP","AntiVoid","AutoFollow","SelfRagdoll","PadEnabled","FollowPlayer","WaypointList","WaypointName"})
+        manager:SetIgnoreIndexes({"MenuKeybind","Freecam","Spectate","SpectatePlayer","ServerChoice","JobID","AimAssist","SilentAim","Fly","Noclip","AntiFling","AimHardLock","RoundDetection","SilentConfigName","SilentConfigChoice","SilentMethod","CustomGravity","JumpPower","Sprint","NoAcceleration","FakeWallhop","ClickTP","AntiVoid","AutoFollow","SelfRagdoll","PadEnabled","FollowPlayer","WaypointList","WaypointName"})
         manager:SetFolder("ClaudeHub/MM2"); manager:BuildConfigSection(Tabs.Settings)
     end)
     ready = true
@@ -1907,7 +1994,7 @@ local success, failure = xpcall(function()
     Toggles.SilentTeamCheck:SetValue(false)
     Toggles.SilentVisibleCheck:SetValue(true)
     Options.SilentPoint:SetValue("HumanoidRootPart")
-    Options.SilentMethod:SetValue("Raycast")
+    Options.SilentMethod:SetValue("MM2 Gun")
     Options.SilentHitChance:SetValue(100)
     Options.SilentRadius:SetValue(130)
     Options.AimSmoothing:SetValue(55)
