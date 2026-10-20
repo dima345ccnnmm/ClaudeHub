@@ -1,6 +1,6 @@
--- ClaudeHub MM2 v0.1.8 | Ordinary Obsidian (deividcomsono, MIT).
+-- ClaudeHub MM2 v0.1.9 | Ordinary Obsidian (deividcomsono, MIT).
 -- Ordinary Obsidian. Cursor-based Trigger Bot; no aim or weapon-call hooks.
-local VERSION = "0.1.8"
+local VERSION = "0.1.9"
 local env = getgenv and getgenv() or _G
 local KEY = "__ClaudeHubMM2"
 if env[KEY] and not env[KEY].Unloaded then
@@ -11,6 +11,20 @@ assert(game.GameId == 66654135, "ClaudeHub MM2: open Murder Mystery 2 first")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local function inputDown(code)
+    local environment=getgenv and getgenv() or _G
+    local touch=environment.__ClaudeHubTouch
+    if touch then
+        if code==Enum.KeyCode.W and (touch.Forward or 0)>0 then return true end
+        if code==Enum.KeyCode.S and (touch.Back or 0)>0 then return true end
+        if code==Enum.KeyCode.A and (touch.Left or 0)>0 then return true end
+        if code==Enum.KeyCode.D and (touch.Right or 0)>0 then return true end
+        if (code==Enum.KeyCode.E or code==Enum.KeyCode.Space) and (touch.Up or 0)>0 then return true end
+        if (code==Enum.KeyCode.Q or code==Enum.KeyCode.LeftControl) and (touch.Down or 0)>0 then return true end
+    end
+    return UIS:IsKeyDown(code)
+end
+
 local CAS = game:GetService("ContextActionService")
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -340,6 +354,7 @@ end
 local aimTrigger=false
 local function resetCombat() combatTarget=nil end
 local function assistHeld()
+    if env.__ClaudeHubTouch and env.__ClaudeHubTouch.Assist then return true end
     local mode=val("AimActivation","RMB or L2")
     return (mode~="L2 only" and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
         or (mode~="RMB only" and aimTrigger)
@@ -433,10 +448,10 @@ local function updateMovement()
             local camera=workspace.CurrentCamera
             local movement=Vector3.zero
             if camera and not menuBusy() then
-                local function key(code) return UIS:IsKeyDown(code) and 1 or 0 end
+                local function key(code) return inputDown(code) and 1 or 0 end
                 local x=key(Enum.KeyCode.D)-key(Enum.KeyCode.A)
                 local z=key(Enum.KeyCode.W)-key(Enum.KeyCode.S)
-                local up=key(Enum.KeyCode.Space)+key(Enum.KeyCode.E)-key(Enum.KeyCode.LeftControl)-key(Enum.KeyCode.Q)
+                local up=math.max(key(Enum.KeyCode.Space),key(Enum.KeyCode.E))-math.max(key(Enum.KeyCode.LeftControl),key(Enum.KeyCode.Q))
                 local direction=h.MoveDirection
                 if x~=0 or z~=0 then
                     local forward=Vector3.new(camera.CFrame.LookVector.X,0,camera.CFrame.LookVector.Z)
@@ -467,11 +482,10 @@ local TriggerEngine={Target=nil,Since=0,NextAttempt=0,Pressed=false,ReleaseAt=0,
 pcall(function() TriggerEngine.GuiService=game:GetService("GuiService") end)
 function TriggerEngine:Release()
     if not self.Pressed then return end
-    local mode,tool=self.Mode,self.Tool
+    local tool=self.Tool
     self.Pressed=false;self.Mode=nil;self.Tool=nil
     local ok,err=pcall(function()
-        if mode=="Mouse" then mouse1release()
-        elseif tool then tool:Deactivate() end
+        if tool then tool:Deactivate() end
     end)
     if not ok then self.LastError=tostring(err):sub(1,180) end
 end
@@ -487,7 +501,12 @@ function TriggerEngine:Candidate()
     local gun=c:FindFirstChild("Gun")
     if not gun or not gun:IsA("Tool") or gun.Enabled==false then return nil,nil,"equip Gun" end
     if not inRound(player) then return nil,nil,"waiting for round" end
-    local unitRay=player:GetMouse().UnitRay
+    local mobile=Library.IsMobile==true or (UIS.TouchEnabled and not UIS.KeyboardEnabled)
+    local unitRay
+    if mobile then
+        local center=camera.ViewportSize/2
+        unitRay=camera:ViewportPointToRay(center.X,center.Y)
+    else unitRay=player:GetMouse().UnitRay end
     if not unitRay or unitRay.Direction.Magnitude<0.001 then return nil,nil,"cursor ray unavailable" end
     local range=val("TriggerRange",250)
     local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
@@ -520,7 +539,8 @@ function TriggerEngine:Step()
     if self.Pressed then
         if now>=self.ReleaseAt or target~=self.Target or gun~=self.Tool then self:Release() end
         if self.Pressed then return end
-    elseif UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+    elseif not (Library.IsMobile==true or (UIS.TouchEnabled and not UIS.KeyboardEnabled))
+        and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
         self.Target=nil;self.Since=0;self.Status="manual fire";return
     end
     if not target then self.Target=nil;self.Since=0;self.Status=status;return end
@@ -528,16 +548,10 @@ function TriggerEngine:Step()
     self.Status="tracking "..target.DisplayName
     if now-self.Since<val("TriggerDelay",100)/1000 or now<self.NextAttempt then return end
     self.NextAttempt=now+val("TriggerInterval",300)/1000;self.Attempts+=1
-    local chance=math.clamp(val("TriggerChance",100),0,100)
-    if chance<=0 or math.random()*100>=chance then self.Status="chance skipped";return end
-    local choice=val("TriggerInput","Auto")
-    local mouseAvailable=type(mouse1press)=="function" and type(mouse1release)=="function"
-    local mode=choice=="Tool.Activate" and "Tool" or mouseAvailable and "Mouse" or choice=="Auto" and "Tool" or nil
-    if not mode then error("Mouse input unavailable; select Tool.Activate") end
-    self.Mode=mode;self.Tool=gun;self.Pressed=true;self.ReleaseAt=now+0.04
-    local ok,err=pcall(function() if mode=="Mouse" then mouse1press() else gun:Activate() end end)
+    self.Mode="Tool";self.Tool=gun;self.Pressed=true;self.ReleaseAt=now+0.04
+    local ok,err=pcall(function() gun:Activate() end)
     if not ok then self:Release();error(tostring(err)) end
-    self.Shots+=1;self.Status="click sent ("..mode..")"
+    self.Shots+=1;self.Status="Tool.Activate sent"
 end
 -- Disable resolvers left by an unloaded older version; never install new hooks.
 for _,key in ipairs({"__ClaudeHubMM2SilentHook","__ClaudeHubMM2SilentRaycastHook",
@@ -652,9 +666,10 @@ local Movement=(function()
     local pad,padConnection,lastLaunch
     local pendingHop
     local function held(id,fallback)
+        if id=="SprintKey" and env.__ClaudeHubTouch and env.__ClaudeHubTouch.Sprint then return true end
         local key=val(id,fallback)
         if type(key)~="string" or key=="None" then return false end
-        local ok,value=pcall(function() return UIS:IsKeyDown(Enum.KeyCode[key]) end)
+        local ok,value=pcall(function() return inputDown(Enum.KeyCode[key]) end)
         return ok and value
     end
     function m:EndWallhop()
@@ -1108,11 +1123,9 @@ local success, failure = xpcall(function()
     local triggerBox=Tabs.Combat:AddRightGroupbox("Trigger Bot","crosshair")
     toggle(triggerBox,"TriggerBot","Trigger Bot","B")
     triggerBox:AddDropdown("TriggerRole",{Text="Target role",Values={"Auto","Murderer","Sheriff / Hero","Any visible player"},Default=1})
-    slider(triggerBox,"TriggerChance","Hit chance (%)",100,0,100)
     slider(triggerBox,"TriggerDelay","Reaction delay (ms)",100,0,500)
     slider(triggerBox,"TriggerInterval","Attempt interval (ms)",300,100,1500)
     slider(triggerBox,"TriggerRange","Max distance (studs)",250,20,500)
-    triggerBox:AddDropdown("TriggerInput",{Text="Input method",Values={"Auto","Mouse","Tool.Activate"},Default=1})
     local triggerStatus=triggerBox:AddLabel("Trigger Bot: off")
     local triggerCount=triggerBox:AddLabel("Clicks: 0 | attempts: 0")
     local triggerError=triggerBox:AddLabel("Last error: none")
@@ -1351,7 +1364,7 @@ local success, failure = xpcall(function()
     end)
     Toggles.Noclip:OnChanged(function() if ready and not on("Noclip") then restore(pools.Noclip) end end)
     Toggles.TriggerBot:OnChanged(function() TriggerEngine:Reset();TriggerEngine.LastError="" end)
-    for _,id in ipairs({"TriggerRole","TriggerChance","TriggerDelay","TriggerInterval","TriggerRange","TriggerInput"}) do
+    for _,id in ipairs({"TriggerRole","TriggerDelay","TriggerInterval","TriggerRange"}) do
         Options[id]:OnChanged(function() TriggerEngine:Reset() end)
     end
     Options.RoundDetection:OnChanged(function() roles={};rolesAt=-math.huge;rolePollAt=-math.huge;rolesGeneration+=1;resetCombat() end)
@@ -1544,12 +1557,18 @@ local success, failure = xpcall(function()
             if not mouseState then mouseState = {Behavior=UIS.MouseBehavior,Icon=UIS.MouseIconEnabled} end
             UIS.MouseBehavior, UIS.MouseIconEnabled = Enum.MouseBehavior.LockCurrentPosition, false
         else releaseMouse() end
+        local touch=env.__ClaudeHubTouch
+        if freeMoving and touch then
+            freeYaw-=(touch.LookX or 0)*0.003
+            freePitch=math.clamp(freePitch-(touch.LookY or 0)*0.003,-1.5,1.5)
+            touch.LookX=0;touch.LookY=0
+        end
         local rotation = CFrame.fromOrientation(freePitch, freeYaw, 0)
         if freeMoving then
-            local function key(code) return UIS:IsKeyDown(code) and 1 or 0 end
+            local function key(code) return inputDown(code) and 1 or 0 end
             local v = Vector3.new(key(Enum.KeyCode.D)-key(Enum.KeyCode.A),key(Enum.KeyCode.E)-key(Enum.KeyCode.Q),key(Enum.KeyCode.S)-key(Enum.KeyCode.W))
             if v.Magnitude > 1 then v = v.Unit end
-            local multiplier = UIS:IsKeyDown(Enum.KeyCode.LeftShift) and 3 or 1
+            local multiplier = inputDown(Enum.KeyCode.LeftShift) and 3 or 1
             freePosition += rotation:VectorToWorldSpace(v) * val("FreecamSpeed",32) * multiplier * math.min(dt,0.1)
         end
         camera.CameraType = Enum.CameraType.Scriptable
@@ -1581,4 +1600,5 @@ if not success then
     pcall(function() Library:Unload() end)
     error("[ClaudeHub MM2] Startup failed: " .. tostring(failure),0)
 end
+Library.ClaudeHubTouchActions={ ["GRAB GUN"]=grabGun }
 return Library

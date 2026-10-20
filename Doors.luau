@@ -51,6 +51,20 @@ local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local UIS = game:GetService("UserInputService")
+local function inputDown(code)
+    local environment=getgenv and getgenv() or _G
+    local touch=environment.__ClaudeHubTouch
+    if touch then
+        if code==Enum.KeyCode.W and (touch.Forward or 0)>0 then return true end
+        if code==Enum.KeyCode.S and (touch.Back or 0)>0 then return true end
+        if code==Enum.KeyCode.A and (touch.Left or 0)>0 then return true end
+        if code==Enum.KeyCode.D and (touch.Right or 0)>0 then return true end
+        if (code==Enum.KeyCode.E or code==Enum.KeyCode.Space) and (touch.Up or 0)>0 then return true end
+        if (code==Enum.KeyCode.Q or code==Enum.KeyCode.LeftControl) and (touch.Down or 0)>0 then return true end
+    end
+    return UIS:IsKeyDown(code)
+end
+
 local player = Players.LocalPlayer
 assert(player, "LocalPlayer is unavailable; run on the client")
 local UI_REPO = "https://raw.githubusercontent.com/joustingmatch/ObsidianUltra/main/"
@@ -1828,9 +1842,13 @@ local function installReferencePort()
         local vector=Vector3.zero
         local camera=workspace.CurrentCamera
         if camera and focused and not Library.Toggled and not Library.IsPicking and not UIS:GetFocusedTextBox() then
-            local function down(key) return UIS:IsKeyDown(Enum.KeyCode[key]) and 1 or 0 end
+            local function down(key) return inputDown(Enum.KeyCode[key]) and 1 or 0 end
             vector=camera.CFrame.LookVector*(down("W")-down("S"))+camera.CFrame.RightVector*(down("D")-down("A"))
                 +Vector3.new(0,down("Space")-math.max(down("LeftControl"),down("RightControl")),0)
+            if Library.IsMobile==true or (UIS.TouchEnabled and not UIS.KeyboardEnabled) then
+                local touch=env.__ClaudeHubTouch or {}
+                vector=h.MoveDirection+Vector3.new((0),(touch.Up or 0)-(touch.Down or 0),0)
+            end
             if vector.Magnitude>1 then vector=vector.Unit end
         end
         flightVelocity.VectorVelocity=vector*val("DoorsFlySpeed",20)

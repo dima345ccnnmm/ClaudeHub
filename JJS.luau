@@ -14,6 +14,20 @@ assert(game.GameId == 3508322461, "ClaudeHub JJS: open Jujutsu Shenanigans first
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local function inputDown(code)
+    local environment=getgenv and getgenv() or _G
+    local touch=environment.__ClaudeHubTouch
+    if touch then
+        if code==Enum.KeyCode.W and (touch.Forward or 0)>0 then return true end
+        if code==Enum.KeyCode.S and (touch.Back or 0)>0 then return true end
+        if code==Enum.KeyCode.A and (touch.Left or 0)>0 then return true end
+        if code==Enum.KeyCode.D and (touch.Right or 0)>0 then return true end
+        if (code==Enum.KeyCode.E or code==Enum.KeyCode.Space) and (touch.Up or 0)>0 then return true end
+        if (code==Enum.KeyCode.Q or code==Enum.KeyCode.LeftControl) and (touch.Down or 0)>0 then return true end
+    end
+    return UIS:IsKeyDown(code)
+end
+
 local CAS = game:GetService("ContextActionService")
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -278,7 +292,7 @@ doBlock=function(target,reason)
         local vim=blockVIM
         release=function() vim:SendKeyEvent(false,key,false,game) end
         -- Do not inject while the user is already holding their physical block key.
-        if UIS:IsKeyDown(key) then restore(pools.Facing);return end
+        if inputDown(key) then restore(pools.Facing);return end
         local ok,err=pcall(function() vim:SendKeyEvent(true,key,false,game) end)
         if not ok then pcall(release);restore(pools.Facing);Toggles.AutoBlock:SetValue(false);notify("Block input rejected: "..tostring(err));return end
     else return end
@@ -6743,12 +6757,18 @@ local success, failure = xpcall(function()
             if not mouseState then mouseState = {Behavior=UIS.MouseBehavior,Icon=UIS.MouseIconEnabled} end
             UIS.MouseBehavior, UIS.MouseIconEnabled = Enum.MouseBehavior.LockCurrentPosition, false
         else releaseMouse() end
+        local touch=env.__ClaudeHubTouch
+        if freeMoving and touch then
+            freeYaw-=(touch.LookX or 0)*0.003
+            freePitch=math.clamp(freePitch-(touch.LookY or 0)*0.003,-1.5,1.5)
+            touch.LookX=0;touch.LookY=0
+        end
         local rotation = CFrame.fromOrientation(freePitch, freeYaw, 0)
         if freeMoving then
-            local function key(code) return UIS:IsKeyDown(code) and 1 or 0 end
+            local function key(code) return inputDown(code) and 1 or 0 end
             local v = Vector3.new(key(Enum.KeyCode.D)-key(Enum.KeyCode.A),key(Enum.KeyCode.E)-key(Enum.KeyCode.Q),key(Enum.KeyCode.S)-key(Enum.KeyCode.W))
             if v.Magnitude > 1 then v = v.Unit end
-            local multiplier = UIS:IsKeyDown(Enum.KeyCode.LeftShift) and 3 or 1
+            local multiplier = inputDown(Enum.KeyCode.LeftShift) and 3 or 1
             freePosition += rotation:VectorToWorldSpace(v) * val("FreecamSpeed",32) * multiplier * math.min(dt,0.1)
         end
         camera.CameraType = Enum.CameraType.Scriptable

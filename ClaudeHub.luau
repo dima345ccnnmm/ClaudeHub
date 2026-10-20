@@ -28,7 +28,7 @@
 --##### [BLOCK 0: SETTINGS] START #####------------------------------
 local CONFIG = {
     Title      = "ClaudeHub",
-    Footer     = "v2.16.0",
+    Footer     = "v2.16.1",
     Icon       = 95816097006870,   -- asset id icon or nil
     FolderName = "MyScript",       -- configs and themes folder
     MenuKey    = "RightControl",     -- menu keybind
@@ -78,6 +78,20 @@ local Tabs = {
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UIS              = game:GetService("UserInputService")
+local function inputDown(code)
+    local environment=getgenv and getgenv() or _G
+    local touch=environment.__ClaudeHubTouch
+    if touch then
+        if code==Enum.KeyCode.W and (touch.Forward or 0)>0 then return true end
+        if code==Enum.KeyCode.S and (touch.Back or 0)>0 then return true end
+        if code==Enum.KeyCode.A and (touch.Left or 0)>0 then return true end
+        if code==Enum.KeyCode.D and (touch.Right or 0)>0 then return true end
+        if (code==Enum.KeyCode.E or code==Enum.KeyCode.Space) and (touch.Up or 0)>0 then return true end
+        if (code==Enum.KeyCode.Q or code==Enum.KeyCode.LeftControl) and (touch.Down or 0)>0 then return true end
+    end
+    return UIS:IsKeyDown(code)
+end
+
 local Lighting         = game:GetService("Lighting")
 local TeleportService  = game:GetService("TeleportService")
 local HttpService      = game:GetService("HttpService")
@@ -538,12 +552,15 @@ do
         if not (Toggles.Fly.Value and bv and bg) then return end
         local cam = workspace.CurrentCamera
         local dir = Vector3.zero
-        if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
-        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+        if Library.IsMobile==true or (UIS.TouchEnabled and not UIS.KeyboardEnabled) then
+            local hum=getHum();if hum then dir=hum.MoveDirection end
+        end
+        if inputDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+        if inputDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+        if inputDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+        if inputDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+        if inputDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+        if inputDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
         bv.Velocity = dir.Magnitude > 0 and dir.Unit * Options.FlySpeed.Value or Vector3.zero
         bg.CFrame = cam.CFrame
     end)
@@ -2906,7 +2923,7 @@ do
     connect(UIS.WindowFocused, function() focused = true end)
     MovementState.GetSprintSpeed = function()
         local key = Options.UltraSprintKey
-        if focused and Toggles.UltraSprint.Value and key and key:GetState()
+        if focused and Toggles.UltraSprint.Value and key and (key:GetState() or ((getgenv and getgenv() or _G).__ClaudeHubTouch or {}).Sprint)
             and not UIS:GetFocusedTextBox() and not Library.IsPicking then return Options.UltraSprintSpeed.Value end
         return nil
     end
